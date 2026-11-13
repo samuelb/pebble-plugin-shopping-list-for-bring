@@ -1,0 +1,184 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 · Copyright 2026 Samuel Barabas -->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shopping List for Bring!</title>
+  <style>
+    :root { color-scheme: light dark; --accent: #2b59c3; --muted: rgba(128,128,128,.18); }
+    body { font: 16px -apple-system, system-ui, sans-serif; margin: 0; padding: 20px; }
+    header { display: flex; align-items: center; gap: 12px; margin: 0 0 6px; }
+    .logo { width: 48px; height: 48px; flex: none; }
+    h1 { font-size: 22px; margin: 0; }
+    h2 { font-size: 15px; margin: 24px 0 8px; }
+    p { line-height: 1.4; margin: 8px 0; }
+    label { display: block; font-size: 14px; font-weight: 600; margin: 16px 0 6px; }
+    input, select {
+      box-sizing: border-box; width: 100%; padding: 11px 12px; font-size: 15px;
+      border: 1px solid rgba(128,128,128,.45); border-radius: 8px;
+      background: transparent; color: inherit;
+    }
+    .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    button { padding: 10px 16px; border: 0; border-radius: 8px; font-size: 15px;
+      background: var(--accent); color: white; }
+    button.secondary { background: var(--muted); color: inherit; }
+    button:disabled { opacity: .55; }
+    #status { margin-top: 20px; padding: 10px 12px; border-radius: 8px; background: var(--muted);
+      font-size: 14px; line-height: 1.4; }
+    .hint { opacity: .72; font-size: 13px; }
+    .hidden { display: none; }
+    #permissions { margin: 0 0 16px; padding: 10px 12px; border-radius: 8px; background: #fdecc8;
+      color: #5c3d00; font-size: 14px; line-height: 1.45; }
+    footer { margin-top: 28px; opacity: .6; font-size: 12px; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <p id="permissions" role="alert" hidden></p>
+  <header>
+    <svg class="logo" viewBox="0 0 256 256" aria-hidden="true">
+      <rect width="256" height="256" rx="56" fill="#2B59C3"/>
+      <g fill="none" stroke="#fff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M42 62h26l24 102h96l20-72H82"/>
+        <path d="M144 108v36M126 126h36"/>
+      </g>
+      <circle cx="106" cy="198" r="13" fill="#fff"/>
+      <circle cx="176" cy="198" r="13" fill="#fff"/>
+    </svg>
+    <h1>Shopping List for Bring!</h1>
+  </header>
+  <p class="hint">Add to your Bring! shopping lists from Index and your Pebble.</p>
+
+  <form id="signIn" class="hidden">
+    <label for="email">Bring! email</label>
+    <input id="email" type="email" autocomplete="username" autocapitalize="none" spellcheck="false">
+    <label for="password">Bring! password</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <p class="hint">Your password goes straight to Bring! (api.getbring.com) once to sign in and isn't
+      stored. Only Bring!'s sign-in token is kept, encrypted, on this phone. Nothing is sent anywhere
+      else. If you sign in to Bring! with Google or Apple, first set a password in the Bring! app
+      (Profile → Account).</p>
+    <div class="buttons"><button id="signInButton" type="submit">Sign in</button></div>
+  </form>
+
+  <div id="account" class="hidden">
+    <p id="who"></p>
+    <label for="list">Default list</label>
+    <select id="list"></select>
+    <p class="hint">Items go here unless you name another list ("add milk to the party list").</p>
+
+    <h2>Try it</h2>
+    <input id="testText" type="text" placeholder="e.g. milk, 6 eggs and bread" autocomplete="off">
+    <div class="buttons">
+      <button id="testButton" type="button">Add to list</button>
+      <button id="refresh" class="secondary" type="button">Reload lists</button>
+      <button id="signOut" class="secondary" type="button">Sign out</button>
+    </div>
+  </div>
+
+  <div id="status">Starting the plugin…</div>
+
+  <footer>
+    Unofficial plugin. Not affiliated with, endorsed or sponsored by Bring! Labs AG. Bring! is a
+    trademark of Bring! Labs AG, used here only to say which service this works with. Apache-2.0
+    licensed, provided as is, without warranty.
+  </footer>
+
+  <script>
+    var statusElement = document.getElementById('status');
+
+    function send(message) {
+      return Pebble.sendMessage('plugin', message);
+    }
+
+    function say(text) {
+      statusElement.textContent = text;
+    }
+
+    function busy(on) {
+      document.querySelectorAll('button, input, select').forEach(function (el) { el.disabled = on; });
+    }
+
+    async function run(message, pending) {
+      busy(true);
+      if (pending) say(pending);
+      try {
+        return await send(message);
+      } catch (e) {
+        return { error: String(e && e.message || e) };
+      } finally {
+        busy(false);
+      }
+    }
+
+    function show(result) {
+      if (!result) return;
+      var signedIn = !!result.signedIn;
+      document.getElementById('signIn').classList.toggle('hidden', signedIn);
+      document.getElementById('account').classList.toggle('hidden', !signedIn);
+      if (signedIn) {
+        document.getElementById('who').textContent = 'Signed in as ' + (result.name ? result.name + ' (' + result.email + ')' : result.email) + '.';
+        var select = document.getElementById('list');
+        select.replaceChildren();
+        (result.lists || []).forEach(function (list) {
+          var option = document.createElement('option');
+          option.value = list.uuid;
+          option.textContent = list.name;
+          option.selected = list.uuid === result.defaultList;
+          select.appendChild(option);
+        });
+      }
+      say(result.error || (signedIn ? 'Connected to Bring!.' : 'Not connected. Sign in with your Bring! account.'));
+    }
+
+    // Names the domains the user still has to allow, if the Pebble app can tell.
+    function showMissingPermissions(missing) {
+      var note = document.getElementById('permissions');
+      if (!missing || !missing.length) {
+        note.hidden = true;
+        return;
+      }
+      note.textContent = 'Allow this plugin to connect to ' + missing.join(' and ') +
+        ' (Permissions, in the title bar) so it can reach Bring!.';
+      note.hidden = false;
+    }
+
+    document.getElementById('signIn').addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var result = await run({
+        type: 'signIn',
+        email: document.getElementById('email').value,
+        password: document.getElementById('password').value,
+      }, 'Signing in…');
+      document.getElementById('password').value = '';
+      show(result);
+    });
+
+    document.getElementById('list').addEventListener('change', async function (event) {
+      show(await run({ type: 'setDefaultList', listUuid: event.target.value }, 'Saving…'));
+    });
+
+    document.getElementById('testButton').addEventListener('click', async function () {
+      var text = document.getElementById('testText').value;
+      if (!text.trim()) return say('Type something to add first.');
+      var result = await run({ type: 'test', text: text }, 'Adding…');
+      if (!result.error) document.getElementById('testText').value = '';
+      say(result.error || result.text);
+    });
+
+    document.getElementById('refresh').addEventListener('click', async function () {
+      show(await run({ type: 'refresh' }, 'Reloading your lists…'));
+    });
+
+    document.getElementById('signOut').addEventListener('click', async function () {
+      show(await run({ type: 'signOut' }, 'Signing out…'));
+    });
+
+    Pebble.addEventListener('ready', async function (event) {
+      if (event.target !== 'plugin') return;
+      send({ type: 'permissions' }).then(function (r) { showMissingPermissions(r && r.missing); }).catch(function () {});
+      show(await run({ type: 'status' }));
+    });
+  </script>
+</body>
+</html>

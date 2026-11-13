@@ -1,0 +1,63 @@
+Shopping List for Bring!
+Copyright 2026 Samuel Barabas
+
+Licensed under the Apache License, Version 2.0 (see LICENSE), except where a
+file says otherwise.
+
+
+No affiliation with Bring! Labs AG
+----------------------------------
+
+This is an unofficial, independent project. It is not affiliated with,
+endorsed, sponsored or approved by Bring! Labs AG.
+
+"Bring!" is a trademark of Bring! Labs AG. It is used here only to say which
+service this plugin works with. This project contains no Bring! logos, icons
+or other Bring! artwork. "Pebble" and "Index 01" are trademarks of their
+respective owners. All other trademarks are the property of their respective
+owners. As section 6 of the Apache License says, the license grants no rights
+in any of these trademarks.
+
+Bring! offers no public API. The plugin uses the same web API as Bring!'s own
+apps, at the user's request and with the user's own account. Bring! Labs can
+change or block that API at any time. Use is at your own risk; see the
+warranty disclaimer in the Apache License (sections 7 and 8).
+
+
+Third-party material
+--------------------
+
+wscript
+  The unmodified plugin build template from pebble-tool
+  (https://github.com/coredevices/pebble-tool), under the MIT License:
+
+  Copyright (c) 2015 Pebble Technology
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+Acknowledgement (no code included)
+  How Bring!'s web API works (endpoints, headers, catalog files) was learned
+  from bring-api (https://github.com/miaucl/bring-api, MIT License), the
+  library behind Home Assistant's Bring! integration. This project contains no
+  code from it.
+
+Data fetched at runtime (not included)
+  Bring!'s item catalog translations (web.getbring.com/locale/articles.*.json)
+  are downloaded by the plugin on the user's phone and cached there. They are
+  not part of this repository or of the built .pbw.

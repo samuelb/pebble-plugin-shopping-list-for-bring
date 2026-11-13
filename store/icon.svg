@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Original icon for "Shopping List for Bring!" (Apache-2.0). Not Bring!'s logo. -->
+  <rect width="256" height="256" rx="56" fill="#2B59C3"/>
+  <g fill="none" stroke="#fff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M42 62h26l24 102h96l20-72H82"/>
+    <path d="M144 108v36M126 126h36"/>
+  </g>
+  <circle cx="106" cy="198" r="13" fill="#fff"/>
+  <circle cx="176" cy="198" r="13" fill="#fff"/>
+</svg>

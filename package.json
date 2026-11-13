@@ -1,0 +1,156 @@
+{
+  "name": "shopping-list-for-bring",
+  "author": "samuel",
+  "version": "0.1.0",
+  "description": "Unofficial Pebble / Index 01 plugin that adds to Bring! shopping lists. Not affiliated with Bring! Labs AG.",
+  "license": "Apache-2.0",
+  "private": true,
+  "keywords": ["pebble-plugin"],
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "publish-store": "pebble publish --icon-small store/icon-80.png --icon-large store/icon-144.png"
+  },
+  "pebble": {
+    "displayName": "Shopping List for Bring!",
+    "uuid": "610d5b0f-d50d-410f-84ab-cf111eaed4bc",
+    "sdkVersion": "3",
+    "projectType": "plugin",
+    "configPage": "src/config.html",
+    "usesPermissions": [
+      {
+        "name": "Internet",
+        "parameters": { "domains": ["api.getbring.com"] },
+        "reason": "To add items to your Bring! lists and read what's on them",
+        "required": true
+      },
+      {
+        "name": "Internet",
+        "parameters": { "domains": ["web.getbring.com"] },
+        "reason": "To match item names with Bring!'s catalog, so items get their icon and section",
+        "required": true
+      }
+    ],
+    "plugin": {
+      "description": "The user's shopping list (Bring!, Einkaufsliste): add groceries and anything else to buy, check items off, read what is on it. Not for reminders or to-dos.",
+      "script": "src/plugin/index.js",
+      "sources": [
+        {
+          "category": "shopping",
+          "items": ["list"],
+          "properties": {
+            "name": ["shortText", "longText"],
+            "item_count": ["numericValue", "shortText", "longText"],
+            "items": ["longText"]
+          },
+          "supportsMultiple": true,
+          "callerPermissions": [],
+          "suggestedRefreshIntervalSec": 300
+        },
+        {
+          "category": "shopping",
+          "items": ["item"],
+          "properties": {
+            "name": ["shortText", "longText"],
+            "specification": ["shortText", "longText"],
+            "list": ["shortText"]
+          },
+          "supportsMultiple": true,
+          "callerPermissions": [],
+          "suggestedRefreshIntervalSec": 300
+        }
+      ],
+      "actions": [
+        {
+          "name": "add_items",
+          "displayName": "Add to Bring!",
+          "description": "The user keeps their shopping list in Bring!. Use this, not create_list_item, for anything they want to buy (groceries, food, drinks, household or hardware supplies), including when they say \"shopping list\", \"grocery list\", \"Einkaufsliste\", \"einkaufen\" or \"kaufen\". Not for reminders or to-dos. One entry per product, named in the user's language; put amounts and details in specification (\"2 l\", \"organic\"), not in name. Omit list to use the default Bring! list.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "description": "The products to add, one entry per product.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Product name, e.g. \"Milk\"."
+                    },
+                    "specification": {
+                      "type": "string",
+                      "description": "Optional amount or detail, e.g. \"2 l\" or \"lactose-free\"."
+                    }
+                  },
+                  "required": ["name"],
+                  "additionalProperties": false
+                }
+              },
+              "list": {
+                "type": "string",
+                "description": "Only when the user names one of their Bring! lists (e.g. \"Party\"): its name. Omit for the default list."
+              }
+            },
+            "required": ["items"],
+            "additionalProperties": false
+          },
+          "targets": ["shopping/list", "shopping/item"],
+          "destructive": false,
+          "requiresConfirmation": false,
+          "callerPermissions": []
+        },
+        {
+          "name": "complete_item",
+          "displayName": "Check off in Bring!",
+          "description": "Check an item off the user's Bring! shopping list (mark it as bought), e.g. when they say they bought or got it. Omit list to use the default Bring! list.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The item as the user said it, e.g. \"milk\"."
+              },
+              "list": {
+                "type": "string",
+                "description": "Only when the user names one of their Bring! lists: its name. Omit for the default list."
+              },
+              "instanceId": {
+                "type": "string",
+                "description": "Item id from shopping/item, when checking off the item a watch tile shows."
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "targets": ["shopping/item"],
+          "destructive": false,
+          "requiresConfirmation": false,
+          "callerPermissions": []
+        },
+        {
+          "name": "read_list",
+          "displayName": "Read Bring! list",
+          "description": "Read what is on the user's Bring! shopping list (what they still need to buy), plus the names of their other Bring! lists.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "list": {
+                "type": "string",
+                "description": "Only when the user names one of their Bring! lists: its name. Omit for the default list."
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "targets": ["shopping/list"],
+          "destructive": false,
+          "requiresConfirmation": false,
+          "callerPermissions": []
+        }
+      ]
+    }
+  }
+}
