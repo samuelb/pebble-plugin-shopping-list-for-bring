@@ -3,6 +3,9 @@
 A plugin for the Pebble app that adds things to your [Bring!](https://www.getbring.com) shopping lists by voice
 with the Index 01 ring and shows your lists on your Pebble.
 
+**Developers:** to build, test, sideload or publish the plugin, or to see how it works, read
+**[DEVELOPMENT.md](DEVELOPMENT.md)**.
+
 > **Unofficial.** Not affiliated with, endorsed, sponsored or approved by Bring! Labs AG. "Bring!" is a
 > trademark of Bring! Labs AG and is used here only to say which service this works with. Bring! has no public
 > API. The plugin uses the same web API as Bring!'s own apps, which Bring! Labs can change or block at any
@@ -50,6 +53,11 @@ The plugin has no watch app of its own. Use a watchface or app that supports plu
 Your Bring! password goes only to Bring! and isn't stored. Your lists only move between your phone and Bring!.
 Nothing reaches the author or any other server. Details in [PRIVACY.md](PRIVACY.md).
 
+## Development
+
+Building, testing, sideloading and publishing the plugin, how it works with Index, and notes on Bring!'s API
+are in **[DEVELOPMENT.md](DEVELOPMENT.md)**.
+
 ## Legal
 
 - **License:** [Apache License 2.0](LICENSE), Copyright 2026 Samuel Barabas. See [NOTICE](NOTICE) for
@@ -60,5 +68,3 @@ Nothing reaches the author or any other server. Details in [PRIVACY.md](PRIVACY.
   respective owners. They are used only to say what this works with.
 - **No warranty:** provided "as is", without warranty of any kind. Bring! Labs can change or block its API, or
   restrict accounts under its [terms of use](https://getbring.com/en/terms-of-use), at any time.
-
-Building or changing the plugin: see [DEVELOPMENT.md](DEVELOPMENT.md).
