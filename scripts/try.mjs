@@ -23,8 +23,46 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = fs.readFileSync(path.join(root, 'src/plugin/index.js'), 'utf8');
 const storeFile = path.join(os.tmpdir(), 'pebble-bring-plugin-dev.json');
 
-const store = fs.existsSync(storeFile) ? JSON.parse(fs.readFileSync(storeFile, 'utf8')) : { local: {}, secure: {} };
-const save = () => fs.writeFileSync(storeFile, JSON.stringify(store, null, 2), { mode: 0o600 });
+// The temp directory may be shared with other users: only use a store file that is a regular file
+// of ours (never through a symlink), and keep it private even if it was made with looser modes.
+function openStore(flags) {
+  const fd = fs.openSync(storeFile, flags | (fs.constants.O_NOFOLLOW || 0), 0o600);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid())) {
+      throw new Error(`${storeFile} isn't a file of yours. Delete it and try again.`);
+    }
+    if (process.platform !== 'win32' && (stat.mode & 0o077)) fs.fchmodSync(fd, 0o600);
+    return fd;
+  } catch (e) {
+    fs.closeSync(fd);
+    throw e;
+  }
+}
+function loadStore() {
+  let fd;
+  try {
+    fd = openStore(fs.constants.O_RDONLY);
+  } catch (e) {
+    if (e.code === 'ENOENT') return { local: {}, secure: {} };
+    throw e;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(fd, 'utf8'));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+const store = loadStore();
+const save = () => {
+  const fd = openStore(fs.constants.O_WRONLY | fs.constants.O_CREAT);
+  try {
+    fs.ftruncateSync(fd, 0);
+    fs.writeSync(fd, JSON.stringify(store, null, 2), 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+};
 const area = (name) => ({
   getItem: (k) => (k in store[name] ? store[name][k] : null),
   setItem: (k, v) => { store[name][k] = String(v); save(); },
