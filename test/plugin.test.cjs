@@ -760,6 +760,18 @@ test('a variant already on the list is kept, whatever order the variants are ask
   }
 });
 
+test('asking for several other variants at once leaves the one on the list as it is', async () => {
+  for (const order of [['cow', 'soy'], ['soy', 'cow']]) {
+    const server = fakeBring();
+    server.lists[LIST].purchase = [{ uuid: 'u-oat', itemId: 'Milch', specification: 'oat' }];
+    const { plugin } = await signedIn(server);
+    const out = await plugin.action('add_items', { items: order.map((specification) => ({ name: 'Milk', specification })) });
+    assert.ok(out.ok, JSON.stringify(out));
+    assert.deepStrictEqual(server.lists[LIST].purchase.map((i) => [i.uuid === 'u-oat', i.specification]).sort(),
+      [[false, 'cow'], [false, 'soy'], [true, 'oat']], order.join());
+  }
+});
+
 test('a variant in "recently used" moves back as it is, and other saved variants are left alone', async () => {
   const saved = () => [{ uuid: 'r-oat', itemId: 'Milch', specification: 'oat' }, { uuid: 'r-cow', itemId: 'Milch', specification: 'cow' }];
   let server = fakeBring();
