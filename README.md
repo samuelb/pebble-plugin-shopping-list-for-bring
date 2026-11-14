@@ -26,9 +26,9 @@ with the Index 01 ring and shows your lists on your Pebble.
 You need the Pebble app 1.18 or later.
 
 1. In the Pebble app, open **Settings → Plugins** and turn on **Plugins / permissions preview**.
-2. Find **Shopping List for Bring!** in the Pebble app store, in the app or at
-   [apps.repebble.com/plugins](https://apps.repebble.com/plugins), and install it. When asked, allow it to
-   connect to `api.getbring.com` and `web.getbring.com`.
+2. Install **[Shopping List for Bring!](https://apps.repebble.com/5e2b3937f0814d3e944258a5)** from the
+   Pebble app store (or search for it in the Pebble app). When asked, allow it to connect to
+   `api.getbring.com` and `web.getbring.com`.
 3. Open **Apps → Plugins → Shopping List for Bring!** and its settings page. Sign in with your Bring! email and
    password, then pick your default list. If you sign in to Bring! with Google or Apple, set a password in the
    Bring! app first (Profile → Account).
