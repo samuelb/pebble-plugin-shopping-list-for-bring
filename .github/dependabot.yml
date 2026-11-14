@@ -1,0 +1,27 @@
+# Dependabot version updates. The only dependencies are the actions the workflows use: package.json has none,
+# and the tools the Release workflow installs (git-cliff, pebble-tool, the SDK) are pinned in release.yml,
+# where Dependabot doesn't look. Update those by hand.
+#
+# Minor and patch bumps come as one grouped PR a week. Majors come separately, since they need a closer look.
+# Version updates wait a week after an action's release (`cooldown`), because a compromised release is usually
+# caught and pulled within days. Security updates (enabled in the repo settings) skip the cooldown and the
+# grouping.
+#
+# The `ci` prefix makes the commits Conventional Commits, so git-cliff files them under Miscellaneous and they
+# never reach the store's release notes.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    assignees:
+      - "samuelb"
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
