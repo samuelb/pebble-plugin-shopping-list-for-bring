@@ -129,8 +129,10 @@ Text for the listing:
 
 ## Icon
 
-`store/icon.svg` is the plugin's own icon: a shopping cart with a plus, deliberately unlike Bring!'s logo. Don't
-use Bring!'s logo or artwork (see [NOTICE](NOTICE)). Render the PNGs with:
+`store/icon.svg` is the plugin's own icon: a shopping bag in a speech bubble, for adding items by voice. It's
+deliberately unlike Bring!'s logo (no three-quarter bag, side panel or checkmark). Don't use Bring!'s logo or artwork
+(see [NOTICE](NOTICE)). The settings page shows the same icon as inline SVG in `src/config.html`, so keep the two in
+sync. Render the PNGs with:
 
 ```sh
 for s in 256 144 80; do rsvg-convert -w $s -h $s store/icon.svg -o store/icon-$s.png; done
