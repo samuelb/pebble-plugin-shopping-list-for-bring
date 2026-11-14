@@ -591,7 +591,7 @@ test('a sign-out Bring! forced late can\'t undo the default list of a newer sign
   assert.strictEqual(out.ok && out.ok.text, 'Added Milch to Party.', JSON.stringify(out));
 });
 
-test('a token read that a new sign-in overtook is read again, not used to sign that one out', async () => {
+test('a token read that a new sign-in overtook is not used to sign that one out', async () => {
   const { server, plugin } = await signedIn();
   // Expired tokens without a refresh token: renewing them would sign out.
   plugin.secure.set(authKeyOf(plugin), JSON.stringify({ ...storedAuth(plugin), refreshToken: undefined, expiresAt: 1 }));
@@ -618,7 +618,8 @@ test('a token read that a new sign-in overtook is read again, not used to sign t
   assert.strictEqual((await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' })).signedIn, true);
   gate.release();
   const out = await pending;
-  assert.ok(out.ok, JSON.stringify(out)); // it goes on with the new sign-in
+  // The request began before the sign-out: it may fail, but must not touch the new sign-in.
+  assert.strictEqual(out.error && out.error.code, 'AUTH_REQUIRED', JSON.stringify(out));
   assert.strictEqual(storedAuth(plugin).accessToken, 'token-100');
   assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, true);
 });

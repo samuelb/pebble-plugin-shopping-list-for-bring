@@ -82,46 +82,42 @@ function writeLocal(key, value) {
 }
 
 // The settings page runs in a session of its own, alongside the one serving actions and sources,
-// and their storage calls interleave. A sign-in or sign-out bumps this counter first, and
-// synchronously, so work begun before it can tell it is stale. Each sign-in also keeps its tokens
-// under a key of its own: work left over from an earlier one can only write to (and clean up)
-// that one's key, never a newer sign-in's.
+// and their storage calls interleave. So every sign-in and sign-out starts a new session (an id in
+// localStorage, which is synchronous), and each session keeps its tokens under a key of its own:
+// work left over from an earlier session can tell it's stale, and can only write to (and clean
+// up) that session's key. The id is random, as on iOS the tokens (Keychain) outlive a reinstall of
+// the Pebble app but localStorage doesn't. No session yet means a sign-in from 0.1.0.
 function currentSession() {
   return readLocal(SESSION_KEY, 0);
-}
-
-// Sessions are only ever compared, so a random id will do. Unlike a counter or the clock, it can't
-// meet the key of an earlier install's session either: on iOS the tokens (Keychain) outlive the
-// Pebble app, but localStorage is deleted with it.
-function startSession() {
-  var session = newUuid();
-  writeLocal(SESSION_KEY, session);
-  return session;
 }
 
 function authKey(session) {
   return session ? AUTH_KEY + '.' + session : AUTH_KEY;
 }
 
-// The current sign-in's tokens, tagged with the session they belong to (not saved with them). A
-// read that a sign-in or sign-out overtook is done again, so tokens never pass for a newer
-// session's.
+// Ends the current session, its tokens and its state, and returns the new one. It switches before
+// the first await, so from then on nothing left over from the old session can save anything.
+async function newSession() {
+  var previous = currentSession();
+  var session = newUuid();
+  writeLocal(SESSION_KEY, session);
+  writeLocal(STATE_KEY, null);
+  await Pebble.secureStorage.removeItem(authKey(previous));
+  return session;
+}
+
+// The current sign-in's tokens, tagged with the session they were read for (not saved with them).
 async function loadAuth() {
-  for (var attempt = 0; attempt < 3; attempt++) {
-    var session = currentSession();
-    var auth = null;
-    try {
-      var raw = await Pebble.secureStorage.getItem(authKey(session));
-      auth = raw ? JSON.parse(raw) : null;
-    } catch (e) {
-      return null;
-    }
-    if (currentSession() !== session) continue;
+  var session = currentSession();
+  try {
+    var raw = await Pebble.secureStorage.getItem(authKey(session));
+    var auth = raw ? JSON.parse(raw) : null;
     if (!auth || !auth.accessToken || !auth.uuid) return null;
     auth.session = session;
     return auth;
+  } catch (e) {
+    return null;
   }
-  return null;
 }
 
 async function saveAuth(auth, session) {
@@ -130,13 +126,8 @@ async function saveAuth(auth, session) {
 
 // Signs out. Given the session a caller began in, only if that is still the current one.
 async function clearAuth(session) {
-  var current = currentSession();
-  if (session !== undefined && session !== current) return;
-  // Together with the bump, before any await: once that's done, the state belongs to whoever
-  // signs in next.
-  startSession();
-  writeLocal(STATE_KEY, null);
-  await Pebble.secureStorage.removeItem(authKey(current));
+  if (session !== undefined && session !== currentSession()) return;
+  await newSession();
 }
 
 // { lists: [{ uuid, name }], listLocales: { uuid: locale }, userLocale, country,
@@ -259,8 +250,7 @@ function authFromToken(json, previous) {
 
 // auth as loadAuth (or this) returns it, tagged with its session.
 async function refreshAuth(auth) {
-  // The session these tokens belong to, which may have ended since they were read.
-  var session = auth.session === undefined ? currentSession() : auth.session;
+  var session = auth.session; // which may have ended since the tokens were read
   if (!auth.refreshToken) {
     await clearAuth(session);
     throw signInError();
@@ -271,14 +261,13 @@ async function refreshAuth(auth) {
     formBody({ grant_type: 'refresh_token', refresh_token: auth.refreshToken }),
     auth
   );
-  // The user may have signed out, signed in again or switched accounts while this was on its way.
+  // The user may have signed out or in again while this was on its way.
   var stored = await loadAuth();
-  if (currentSession() !== session || !stored || stored.uuid !== auth.uuid) throw signInError();
-  // Another request may have refreshed meanwhile: use that.
+  if (currentSession() !== session || !stored) throw signInError();
+  // The settings page may have refreshed meanwhile: use that.
   if (stored.accessToken !== auth.accessToken) return stored;
   if (response.status >= 200 && response.status < 300 && response.json && response.json.access_token) {
     var refreshed = authFromToken(response.json, auth);
-    if (currentSession() !== session) throw signInError();
     await saveAuth(refreshed, session);
     // A sign-out that crossed the save wins: take back what this wrote under its session's key.
     if (currentSession() !== session) {
@@ -337,7 +326,6 @@ function settingsMap(entries) {
 }
 
 async function syncAccount() {
-  var session = currentSession();
   var auth = await loadAuth();
   if (!auth) throw signInError();
   var previous = loadState();
@@ -364,7 +352,7 @@ async function syncAccount() {
   });
   // The settings page may have signed out, signed in again or picked another default list while
   // this loaded. Check and save with no await in between, so nothing can come between them.
-  if (currentSession() !== session) throw signInError();
+  if (currentSession() !== auth.session) throw signInError();
   state.chosenList = loadState().chosenList || '';
   saveState(state);
   return state;
@@ -950,20 +938,11 @@ async function signIn(email, password) {
   if (response.status < 200 || response.status >= 300 || !response.json || !response.json.access_token) {
     throw httpError(response, 'sign in');
   }
-  var auth = authFromToken(response.json, { email: email });
-  var previous = currentSession();
-  var session = startSession();
-  writeLocal(STATE_KEY, null);
-  await saveAuth(auth, session);
-  await Pebble.secureStorage.removeItem(authKey(previous)); // a sign-in this one replaces
-  try {
-    await syncAccount();
-  } catch (e) {
-    // Signed in all the same: status() says what went wrong loading the lists.
-    if (e.code === 'AUTH_REQUIRED') throw e;
-  }
+  await saveAuth(authFromToken(response.json, { email: email }), await newSession());
+  // Loads the account, or says what went wrong loading it.
+  var result = await status();
   Pebble.refreshSources(SOURCES);
-  return status();
+  return result;
 }
 
 Pebble.registerConfigHandler(async function (message, respond) {
