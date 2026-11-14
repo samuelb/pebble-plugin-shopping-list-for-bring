@@ -18,8 +18,9 @@ var CATALOG_ROOT = 'https://web.getbring.com/locale/articles.';
 // The client key Bring!'s web app sends with every request; it names the app, not the user.
 var API_KEY = 'cof4Nc6D8saplXjE3h3HXqHH8m7VU2i1Gs0g85Sp';
 
-var AUTH_KEY = 'bring.auth.v1'; // secureStorage
+var AUTH_KEY = 'bring.auth.v1'; // secureStorage, + '.' + session after the first sign-in
 var STATE_KEY = 'bring.state.v1'; // localStorage
+var SESSION_KEY = 'bring.session.v1'; // localStorage, changes on every sign-in and sign-out
 var CATALOG_KEY = 'bring.catalog.v1.'; // localStorage, + locale
 
 var STATE_TTL_MS = 60 * 60 * 1000;
@@ -80,23 +81,62 @@ function writeLocal(key, value) {
   }
 }
 
+// The settings page runs in a session of its own, alongside the one serving actions and sources,
+// and their storage calls interleave. A sign-in or sign-out bumps this counter first, and
+// synchronously, so work begun before it can tell it is stale. Each sign-in also keeps its tokens
+// under a key of its own: work left over from an earlier one can only write to (and clean up)
+// that one's key, never a newer sign-in's.
+function currentSession() {
+  return readLocal(SESSION_KEY, 0);
+}
+
+// Sessions are only ever compared, so a random id will do. Unlike a counter or the clock, it can't
+// meet the key of an earlier install's session either: on iOS the tokens (Keychain) outlive the
+// Pebble app, but localStorage is deleted with it.
+function startSession() {
+  var session = newUuid();
+  writeLocal(SESSION_KEY, session);
+  return session;
+}
+
+function authKey(session) {
+  return session ? AUTH_KEY + '.' + session : AUTH_KEY;
+}
+
+// The current sign-in's tokens, tagged with the session they belong to (not saved with them). A
+// read that a sign-in or sign-out overtook is done again, so tokens never pass for a newer
+// session's.
 async function loadAuth() {
-  try {
-    var raw = await Pebble.secureStorage.getItem(AUTH_KEY);
-    var auth = raw ? JSON.parse(raw) : null;
-    return auth && auth.accessToken && auth.uuid ? auth : null;
-  } catch (e) {
-    return null;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    var session = currentSession();
+    var auth = null;
+    try {
+      var raw = await Pebble.secureStorage.getItem(authKey(session));
+      auth = raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+    if (currentSession() !== session) continue;
+    if (!auth || !auth.accessToken || !auth.uuid) return null;
+    auth.session = session;
+    return auth;
   }
+  return null;
 }
 
-async function saveAuth(auth) {
-  await Pebble.secureStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+async function saveAuth(auth, session) {
+  await Pebble.secureStorage.setItem(authKey(session), JSON.stringify(auth));
 }
 
-async function clearAuth() {
-  await Pebble.secureStorage.removeItem(AUTH_KEY);
+// Signs out. Given the session a caller began in, only if that is still the current one.
+async function clearAuth(session) {
+  var current = currentSession();
+  if (session !== undefined && session !== current) return;
+  // Together with the bump, before any await: once that's done, the state belongs to whoever
+  // signs in next.
+  startSession();
   writeLocal(STATE_KEY, null);
+  await Pebble.secureStorage.removeItem(authKey(current));
 }
 
 // { lists: [{ uuid, name }], listLocales: { uuid: locale }, userLocale, country,
@@ -217,9 +257,12 @@ function authFromToken(json, previous) {
   };
 }
 
+// auth as loadAuth (or this) returns it, tagged with its session.
 async function refreshAuth(auth) {
+  // The session these tokens belong to, which may have ended since they were read.
+  var session = auth.session === undefined ? currentSession() : auth.session;
   if (!auth.refreshToken) {
-    await clearAuth();
+    await clearAuth(session);
     throw signInError();
   }
   var response = await send(
@@ -228,16 +271,25 @@ async function refreshAuth(auth) {
     formBody({ grant_type: 'refresh_token', refresh_token: auth.refreshToken }),
     auth
   );
+  // The user may have signed out, signed in again or switched accounts while this was on its way.
+  var stored = await loadAuth();
+  if (currentSession() !== session || !stored || stored.uuid !== auth.uuid) throw signInError();
+  // Another request may have refreshed meanwhile: use that.
+  if (stored.accessToken !== auth.accessToken) return stored;
   if (response.status >= 200 && response.status < 300 && response.json && response.json.access_token) {
     var refreshed = authFromToken(response.json, auth);
-    await saveAuth(refreshed);
+    if (currentSession() !== session) throw signInError();
+    await saveAuth(refreshed, session);
+    // A sign-out that crossed the save wins: take back what this wrote under its session's key.
+    if (currentSession() !== session) {
+      await Pebble.secureStorage.removeItem(authKey(session));
+      throw signInError();
+    }
+    refreshed.session = session;
     return refreshed;
   }
-  // Another request may have refreshed (or the user signed in again) meanwhile.
-  var stored = await loadAuth();
-  if (stored && stored.accessToken !== auth.accessToken) return stored;
   if (response.status === 400 || response.status === 401 || response.status === 403) {
-    await clearAuth();
+    await clearAuth(session);
     throw fail('AUTH_REQUIRED', 'Bring! signed this plugin out. Sign in again on its settings page.');
   }
   throw httpError(response, 'renew the Bring! sign-in');
@@ -282,6 +334,7 @@ function settingsMap(entries) {
 }
 
 async function syncAccount() {
+  var session = currentSession();
   var auth = await loadAuth();
   if (!auth) throw signInError();
   var previous = loadState();
@@ -298,7 +351,6 @@ async function syncAccount() {
     userLocale: localeFor(userLocale.language, userLocale.country),
     country: String(userLocale.country || previous.country || 'DE').toUpperCase(),
     accountDefaultList: settingsMap(settings && settings.usersettings).defaultListUUID || auth.defaultList || '',
-    chosenList: previous.chosenList || '',
     syncedAt: Date.now(),
   };
   ((settings && settings.userlistsettings) || []).forEach(function (entry) {
@@ -307,6 +359,10 @@ async function syncAccount() {
       state.listLocales[entry.listUuid] = language;
     }
   });
+  // The settings page may have signed out, signed in again or picked another default list while
+  // this loaded. Check and save with no await in between, so nothing can come between them.
+  if (currentSession() !== session) throw signInError();
+  state.chosenList = loadState().chosenList || '';
   saveState(state);
   return state;
 }
@@ -782,8 +838,11 @@ async function signIn(email, password) {
     throw httpError(response, 'sign in');
   }
   var auth = authFromToken(response.json, { email: email });
-  await saveAuth(auth);
+  var previous = currentSession();
+  var session = startSession();
   writeLocal(STATE_KEY, null);
+  await saveAuth(auth, session);
+  await Pebble.secureStorage.removeItem(authKey(previous)); // a sign-in this one replaces
   await syncAccount();
   Pebble.refreshSources(SOURCES);
   return status();

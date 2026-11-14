@@ -156,11 +156,16 @@ async function signedIn(server = fakeBring()) {
 
 const lastPut = (server) => JSON.parse(server.requests.filter((r) => r.method === 'PUT').pop().body);
 
+// The sign-in's tokens. Each sign-in keeps them under a key of its own (bring.auth.v1[.<session>]).
+const authKeyOf = (plugin) => [...plugin.secure.keys()].find((k) => k.startsWith('bring.auth.v1'));
+const storedAuth = (plugin) => JSON.parse(plugin.secure.get(authKeyOf(plugin)));
+const expireToken = (plugin) => plugin.secure.set(authKeyOf(plugin), JSON.stringify({ ...storedAuth(plugin), expiresAt: 1 }));
+
 test('signing in keeps the tokens but never the password, and lists the lists', async () => {
   const { plugin } = await signedIn();
   const stored = [...plugin.secure.values(), ...plugin.local.values()].join('\n');
   assert.ok(!stored.includes('secret'));
-  assert.ok(JSON.parse(plugin.secure.get('bring.auth.v1')).refreshToken === 'refresh-1');
+  assert.ok(storedAuth(plugin).refreshToken === 'refresh-1');
   const status = await plugin.config({ type: 'status' });
   assert.deepStrictEqual(status.lists.map((l) => l.name), ['Zuhause', 'Party']);
   assert.strictEqual(status.defaultList, LIST);
@@ -272,15 +277,14 @@ test('parseItems handles German phrasing too', async () => {
 
 test('an expired token is renewed before use, and a rejected one once after', async () => {
   const { server, plugin } = await signedIn();
-  const auth = JSON.parse(plugin.secure.get('bring.auth.v1'));
-  plugin.secure.set('bring.auth.v1', JSON.stringify({ ...auth, expiresAt: 1 }));
+  expireToken(plugin);
   let out = await plugin.action('add_items', { items: [{ name: 'Milk' }] });
   assert.ok(out.ok, JSON.stringify(out));
-  assert.strictEqual(JSON.parse(plugin.secure.get('bring.auth.v1')).accessToken, 'token-2');
+  assert.strictEqual(storedAuth(plugin).accessToken, 'token-2');
   server.token = 'token-7'; // Bring! revoked token-2 server-side; the next refresh hands out token-8
   out = await plugin.action('add_items', { items: [{ name: 'Eggs' }] });
   assert.ok(out.ok, JSON.stringify(out));
-  assert.strictEqual(JSON.parse(plugin.secure.get('bring.auth.v1')).accessToken, 'token-8');
+  assert.strictEqual(storedAuth(plugin).accessToken, 'token-8');
 });
 
 test('a refused refresh signs out and asks to sign in again', async () => {
@@ -397,4 +401,238 @@ test('a dead network is told apart from a missing permission', async () => {
   out = await plugin.action('add_items', { items: [{ name: 'Milk' }] });
   assert.match(out.error.message, /isn't allowed to connect to web\.getbring\.com yet/);
   assert.deepStrictEqual(await plugin.config({ type: 'permissions' }), { missing: ['web.getbring.com'] });
+});
+
+// Holds the first request whose URL passes `match` until release() is called.
+function hold(server, match) {
+  const fetch = server.fetch;
+  const gate = {};
+  gate.started = new Promise((resolve) => (gate.arrived = resolve));
+  const held = new Promise((resolve) => (gate.release = resolve));
+  let first = true;
+  server.fetch = async (url, init) => {
+    if (first && match(url)) {
+      first = false;
+      gate.arrived();
+      await held;
+    }
+    return fetch(url, init);
+  };
+  return gate;
+}
+
+test('signing out while a token renewal is under way stays signed out', async () => {
+  const { server, plugin } = await signedIn();
+  expireToken(plugin);
+  const gate = hold(server, (url) => url === API + 'v2/bringauth/token');
+  const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
+  await gate.started;
+  assert.strictEqual((await plugin.config({ type: 'signOut' })).signedIn, false);
+  gate.release();
+  const out = await pending;
+  assert.strictEqual(out.error && out.error.code, 'AUTH_REQUIRED', JSON.stringify(out));
+  assert.strictEqual(plugin.secure.size, 0);
+  assert.ok(!server.requests.some((r) => r.method === 'PUT'));
+  assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, false);
+});
+
+test('a sync that was under way keeps the default list picked meanwhile', async () => {
+  const { server, plugin } = await signedIn();
+  const state = JSON.parse(plugin.local.get('bring.state.v1'));
+  plugin.local.set('bring.state.v1', JSON.stringify({ ...state, syncedAt: 1 }));
+  const gate = hold(server, (url) => url === API + `bringusers/${USER}/lists`);
+  const pending = plugin.source('shopping', 'list');
+  await gate.started;
+  assert.strictEqual((await plugin.config({ type: 'setDefaultList', listUuid: PARTY })).defaultList, PARTY);
+  gate.release();
+  assert.ok((await pending).data);
+  const out = await plugin.action('add_items', { items: [{ name: 'Milch' }] });
+  assert.strictEqual(out.ok.text, 'Added Milch to Party.');
+});
+
+test('a sign-out that comes between renewing the token and saving it wins', async () => {
+  // The settings page's storage calls can land between this request's own: hold the read that
+  // checks the session (it answers with what was stored before the sign-out), or the save itself.
+  for (const op of ['getItem', 'setItem']) {
+    const { server, plugin } = await signedIn();
+    expireToken(plugin);
+    let renewed = false;
+    const fetch = server.fetch;
+    server.fetch = async (url, init) => {
+      const reply = await fetch(url, init);
+      if (url === API + 'v2/bringauth/token') renewed = true;
+      return reply;
+    };
+    const storage = plugin.context.Pebble.secureStorage;
+    const original = storage[op];
+    const gate = {};
+    gate.started = new Promise((resolve) => (gate.arrived = resolve));
+    const held = new Promise((resolve) => (gate.release = resolve));
+    let holding = false;
+    storage[op] = async (...args) => {
+      if (!renewed || holding) return original(...args);
+      holding = true;
+      gate.arrived();
+      if (op === 'getItem') {
+        const value = await original(...args);
+        await held;
+        return value;
+      }
+      await held;
+      return original(...args);
+    };
+    const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
+    await gate.started;
+    assert.strictEqual((await plugin.config({ type: 'signOut' })).signedIn, false);
+    gate.release();
+    const out = await pending;
+    assert.strictEqual(out.error && out.error.code, 'AUTH_REQUIRED', op + ': ' + JSON.stringify(out));
+    assert.strictEqual(plugin.secure.size, 0, op);
+    assert.ok(!server.requests.some((r) => r.method === 'PUT'), op);
+    assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, false, op);
+  }
+});
+
+test('a sign-out during a sync leaves no account data behind', async () => {
+  const { server, plugin } = await signedIn();
+  const state = JSON.parse(plugin.local.get('bring.state.v1'));
+  plugin.local.set('bring.state.v1', JSON.stringify({ ...state, syncedAt: 1 }));
+  const gate = hold(server, (url) => url === API + `bringusers/${USER}/lists`);
+  const pending = plugin.source('shopping', 'list');
+  await gate.started;
+  await plugin.config({ type: 'signOut' });
+  gate.release();
+  assert.strictEqual((await pending).error.code, 'AUTH_REQUIRED');
+  assert.ok(!plugin.local.has('bring.state.v1'));
+  assert.strictEqual(plugin.secure.size, 0);
+});
+
+test('a renewal saved late can\'t undo a sign-in made after a sign-out', async () => {
+  const { server, plugin } = await signedIn();
+  expireToken(plugin);
+  let renewed = false;
+  const fetch = server.fetch;
+  server.fetch = async (url, init) => {
+    const reply = await fetch(url, init);
+    if (url === API + 'v2/bringauth/token') renewed = true;
+    return reply;
+  };
+  // Hold the renewal's save until the user has signed out and in again.
+  const storage = plugin.context.Pebble.secureStorage;
+  const setItem = storage.setItem;
+  const gate = {};
+  gate.started = new Promise((resolve) => (gate.arrived = resolve));
+  const held = new Promise((resolve) => (gate.release = resolve));
+  let holding = false;
+  storage.setItem = async (...args) => {
+    if (renewed && !holding) {
+      holding = true;
+      gate.arrived();
+      await held;
+    }
+    return setItem(...args);
+  };
+  const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
+  await gate.started;
+  await plugin.config({ type: 'signOut' });
+  server.token = 'token-100';
+  assert.strictEqual((await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' })).signedIn, true);
+  gate.release();
+  assert.strictEqual((await pending).error.code, 'AUTH_REQUIRED');
+  assert.strictEqual(plugin.secure.size, 1);
+  assert.strictEqual(storedAuth(plugin).accessToken, 'token-100');
+  assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, true);
+  assert.ok((await plugin.action('add_items', { items: [{ name: 'Milk' }] })).ok);
+});
+
+test('a sign-in from before sessions had their own keys stays signed in', async () => {
+  // 0.1.0 kept the tokens under bring.auth.v1 and had no session counter.
+  const server = fakeBring();
+  const first = await signedIn(server);
+  const plugin = load(server, {
+    secure: { 'bring.auth.v1': first.plugin.secure.get(authKeyOf(first.plugin)) },
+    local: { 'bring.state.v1': first.plugin.local.get('bring.state.v1') },
+  });
+  assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, true);
+  assert.ok((await plugin.action('add_items', { items: [{ name: 'Milk' }] })).ok);
+});
+
+test('a sign-out Bring! forced late can\'t undo the default list of a newer sign-in', async () => {
+  const { server, plugin } = await signedIn();
+  expireToken(plugin);
+  server.refreshStatus = 401;
+  // Hold the forced sign-out's token removal until the user has signed in again and picked a list.
+  const storage = plugin.context.Pebble.secureStorage;
+  const removeItem = storage.removeItem;
+  const gate = {};
+  gate.started = new Promise((resolve) => (gate.arrived = resolve));
+  const held = new Promise((resolve) => (gate.release = resolve));
+  let holding = false;
+  storage.removeItem = async (...args) => {
+    if (!holding) {
+      holding = true;
+      gate.arrived();
+      await held;
+    }
+    return removeItem(...args);
+  };
+  const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
+  await gate.started;
+  server.refreshStatus = 200;
+  server.token = 'token-100';
+  assert.strictEqual((await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' })).signedIn, true);
+  assert.strictEqual((await plugin.config({ type: 'setDefaultList', listUuid: PARTY })).defaultList, PARTY);
+  gate.release();
+  assert.strictEqual((await pending).error.code, 'AUTH_REQUIRED');
+  const out = await plugin.action('add_items', { items: [{ name: 'Milch' }] });
+  assert.strictEqual(out.ok && out.ok.text, 'Added Milch to Party.', JSON.stringify(out));
+});
+
+test('a token read that a new sign-in overtook is read again, not used to sign that one out', async () => {
+  const { server, plugin } = await signedIn();
+  // Expired tokens without a refresh token: renewing them would sign out.
+  plugin.secure.set(authKeyOf(plugin), JSON.stringify({ ...storedAuth(plugin), refreshToken: undefined, expiresAt: 1 }));
+  // Hold the reply of the action's first token read until the user has signed out and in again.
+  const storage = plugin.context.Pebble.secureStorage;
+  const getItem = storage.getItem;
+  const gate = {};
+  gate.started = new Promise((resolve) => (gate.arrived = resolve));
+  const held = new Promise((resolve) => (gate.release = resolve));
+  let holding = false;
+  storage.getItem = async (...args) => {
+    const value = await getItem(...args);
+    if (!holding) {
+      holding = true;
+      gate.arrived();
+      await held;
+    }
+    return value;
+  };
+  const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
+  await gate.started;
+  await plugin.config({ type: 'signOut' });
+  server.token = 'token-100';
+  assert.strictEqual((await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' })).signedIn, true);
+  gate.release();
+  const out = await pending;
+  assert.ok(out.ok, JSON.stringify(out)); // it goes on with the new sign-in
+  assert.strictEqual(storedAuth(plugin).accessToken, 'token-100');
+  assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, true);
+});
+
+test('a sign-out stays signed out after the Pebble app was reinstalled', async () => {
+  // On iOS the tokens (Keychain) outlive the app, localStorage doesn't: keys from an earlier
+  // install, here session 2's, must never be read by a new session.
+  const server = fakeBring();
+  const earlier = await signedIn(server);
+  const tokens = earlier.plugin.secure.get(authKeyOf(earlier.plugin));
+  // Keys an earlier install may have left: a counter's, and the clock's around now.
+  const left = { 'bring.auth.v1.2': tokens };
+  for (let t = Date.now() - 2000; t < Date.now() + 2000; t++) left['bring.auth.v1.' + t] = tokens;
+  const plugin = load(server, { secure: left });
+  assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, false);
+  assert.strictEqual((await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' })).signedIn, true);
+  assert.strictEqual((await plugin.config({ type: 'signOut' })).signedIn, false);
+  assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, false);
+  assert.strictEqual((await plugin.action('add_items', { items: [{ name: 'Milk' }] })).error.code, 'AUTH_REQUIRED');
 });
