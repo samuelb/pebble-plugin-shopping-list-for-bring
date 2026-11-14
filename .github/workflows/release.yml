@@ -37,6 +37,9 @@ defaults:
 
 env:
   APP_ID: 5e2b3937f0814d3e944258a5
+  # git-cliff and pebble-tool are pinned, but not what they depend on. uv resolves those as of this date, so a
+  # dependency release published later can't get into a build. Move it forward when bumping uv or pebble-tool.
+  UV_EXCLUDE_NEWER: "2026-11-13T00:00:00Z"
 
 jobs:
   # ---------------------------------------------------------------- Prepare
@@ -64,6 +67,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.8" # uv itself; setup-uv takes the latest without it
           enable-cache: false
 
       - name: Compute the next version and release notes
@@ -124,6 +128,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.8" # uv itself; setup-uv takes the latest without it
           enable-cache: false
 
       - name: Install pebble-tool and the SDK
