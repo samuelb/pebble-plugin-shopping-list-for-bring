@@ -585,8 +585,9 @@ function splitQuantity(part) {
 
 function parseItems(text) {
   var cleaned = String(text || '').trim().replace(LEADING_FILLER, '').replace(TRAILING_FILLER, '');
-  return cleaned.split(SEPARATORS).map(function (part) {
-    part = part.trim().replace(/^[-*•]\s*/, '').replace(/[.!?]+$/, '').trim();
+  // A comma between digits is a decimal comma ("1,5 l"), not a separator: keep it out of the split.
+  return cleaned.replace(/(\d),(?=\d)/g, '$1\u0000').split(SEPARATORS).map(function (part) {
+    part = part.replace(/\u0000/g, ',').trim().replace(/^[-*•]\s*/, '').replace(/[.!?]+$/, '').trim();
     return part ? splitQuantity(part) : null;
   }).filter(Boolean);
 }
@@ -625,6 +626,10 @@ function findItem(items, itemId) {
     if (items[i] && fold(items[i].itemId) === wanted) return items[i];
   }
   return null;
+}
+
+function sameSpecification(specifications, specification) {
+  return specifications.some(function (other) { return fold(other) === fold(specification); });
 }
 
 function newUuid() {
@@ -687,30 +692,69 @@ async function addItems(args, items) {
   var catalog = opened.catalog;
   var current = opened.current;
 
+  // Each product once, with each of its specifications once. Bring! keeps an entry per
+  // specification ("Milk (oat)" and "Milk (cow)"); one said without any is covered by the others.
+  var products = [];
+  var byId = Object.create(null);
+  for (var i = 0; i < items.length; i++) {
+    var itemId = await itemIdFor(items[i].name, list, catalog);
+    var product = byId[fold(itemId)];
+    if (!product) products.push(product = byId[fold(itemId)] = { itemId: itemId, specifications: [] });
+    if (!sameSpecification(product.specifications, items[i].specification)) {
+      product.specifications.push(items[i].specification);
+    }
+  }
+
   var changes = [];
   var added = [];
   var already = [];
-  var seen = {};
-  for (var i = 0; i < items.length; i++) {
-    var item = items[i];
-    var itemId = await itemIdFor(item.name, list, catalog);
-    if (seen[fold(itemId)]) continue;
-    seen[fold(itemId)] = true;
-    var onList = findItem(current.purchase, itemId);
-    // Already there with nothing new to say: leave it as it is.
-    if (onList && (!item.specification || item.specification === (onList.specification || ''))) {
-      already.push(describe(displayName(onList.itemId, catalog), onList.specification));
-      continue;
-    }
-    // Reuse the uuid of an item already on the list (to update its details) or in "recently
-    // used" (so it moves back, as tapping it in the app does) instead of making a duplicate.
-    var known = onList || findItem(current.recently, itemId);
-    if (known) itemId = known.itemId;
-    var specification = item.specification || (known && known.specification) || '';
-    changes.push(change(itemId, specification, (known && known.uuid) || newUuid(), 'TO_PURCHASE'));
-    var label = describe(displayName(itemId, catalog), specification);
-    added.push(onList ? label + ' (updated)' : label);
-  }
+  var claimed = []; // entries this request keeps or changes
+  var free = function (entry) { return claimed.indexOf(entry) < 0; };
+  var entriesOf = function (entries, id) {
+    return entries.filter(function (entry) { return entry && fold(entry.itemId) === fold(id); });
+  };
+  products.forEach(function (product) {
+    var specifications = product.specifications.length > 1
+      ? product.specifications.filter(Boolean) : product.specifications;
+    var onList = entriesOf(current.purchase, product.itemId);
+    // First the variants already there with nothing new to say: leave them as they are, and out
+    // of reach of the others, whatever order they were asked for in.
+    var missing = specifications.filter(function (specification) {
+      var same = onList.filter(function (entry) {
+        return free(entry) && (!specification || fold(entry.specification) === fold(specification));
+      })[0];
+      if (!same) return true;
+      claimed.push(same);
+      already.push(describe(displayName(same.itemId, catalog), same.specification));
+      return false;
+    });
+    var recently = entriesOf(current.recently, product.itemId);
+    var asked = function (entry) {
+      return missing.some(function (specification) { return fold(specification) === fold(entry.specification); });
+    };
+    missing.forEach(function (specification) {
+      // Reuse a uuid instead of making a duplicate, in this order: the entry in "recently used"
+      // with these details (it moves back as it is, as tapping it in the app does); the item's
+      // only entry on the list, to update its details (unless it's a variant asked for); without
+      // details asked for, a recent entry (a plain one if there is one); with them, the item's only
+      // recent entry, if no other variant asked for is it. Otherwise add another rather than change
+      // one of several.
+      var unused = recently.filter(free);
+      var exact = specification ? unused.filter(function (entry) {
+        return fold(entry.specification) === fold(specification);
+      })[0] : null;
+      var updating = !exact && onList.length === 1 && free(onList[0]) ? onList[0] : null;
+      var plain = unused.filter(function (entry) { return !entry.specification; })[0] || unused[0];
+      var only = recently.length === 1 && free(recently[0]) && !asked(recently[0]) ? recently[0] : null;
+      var known = exact || updating || (!specification ? plain : only);
+      if (known) claimed.push(known);
+      var id = known ? known.itemId : product.itemId;
+      var details = specification || (known && known.specification) || '';
+      changes.push(change(id, details, (known && known.uuid) || newUuid(), 'TO_PURCHASE'));
+      var label = describe(displayName(id, catalog), details);
+      added.push(updating ? label + ' (updated)' : label);
+    });
+  });
 
   if (changes.length) await putChanges(list.uuid, changes, 'add to the list');
 

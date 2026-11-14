@@ -83,8 +83,10 @@ function fakeBring(options = {}) {
       const l = server.lists[m[1]];
       const body = JSON.parse(init.body);
       for (const c of body.changes) {
-        l.purchase = l.purchase.filter((i) => i.uuid !== c.uuid && i.itemId !== c.itemId);
-        l.recently = l.recently.filter((i) => i.uuid !== c.uuid && i.itemId !== c.itemId);
+        // Bring! keeps an entry per uuid, so one product can be on a list in several variants.
+        const same = (i) => (c.uuid ? i.uuid === c.uuid : i.itemId === c.itemId);
+        l.purchase = l.purchase.filter((i) => !same(i));
+        l.recently = l.recently.filter((i) => !same(i));
         const item = { uuid: c.uuid, itemId: c.itemId, specification: c.spec, attributes: [] };
         if (c.operation === 'TO_PURCHASE') l.purchase.push(item);
         if (c.operation === 'TO_RECENTLY') l.recently.push(item);
@@ -273,6 +275,7 @@ test('parseItems handles German phrasing too', async () => {
   assert.deepStrictEqual(parse('  '), []);
   assert.deepStrictEqual(parse('add cheese to Bring'), [{ name: 'cheese', specification: '' }]);
   assert.deepStrictEqual(parse('Butter zur Einkaufsliste hinzufügen'), [{ name: 'Butter', specification: '' }]);
+  assert.deepStrictEqual(parse('1,5 l Milch, Brot'), [{ name: 'Milch', specification: '1,5 l' }, { name: 'Brot', specification: '' }]);
 });
 
 test('an expired token is renewed before use, and a rejected one once after', async () => {
@@ -719,4 +722,74 @@ test('lists that differ only by "my" and "our" are told apart', async () => {
   assert.strictEqual(await goesTo('our groceries', 'Beans'), 'Our Groceries');
   // Without "my" or "our" the words fit both: the default one is used.
   assert.strictEqual(await goesTo('groceries list', 'Salt'), 'My Groceries');
+});
+
+test('adding a product that is on the list in several variants changes none of them', async () => {
+  const server = fakeBring();
+  server.lists[LIST].purchase = [{ uuid: 'u-oat', itemId: 'Milch', specification: 'oat' }, { uuid: 'u-cow', itemId: 'Milch', specification: 'cow' }];
+  const { plugin } = await signedIn(server);
+  let out = await plugin.action('add_items', { items: [{ name: 'milk', specification: 'cow' }] });
+  assert.strictEqual(out.ok.text, 'Milk (cow) is already on Zuhause.');
+  assert.ok(!server.requests.some((r) => r.method === 'PUT'));
+  out = await plugin.action('add_items', { items: [{ name: 'milk', specification: 'soy' }] });
+  assert.strictEqual(out.ok.text, 'Added Milk (soy) to Zuhause.');
+  assert.deepStrictEqual(server.lists[LIST].purchase.map((i) => i.specification), ['oat', 'cow', 'soy']);
+});
+
+test('one product asked for in several variants at once adds each of them', async () => {
+  const server = fakeBring();
+  server.lists[LIST].purchase = [{ uuid: 'u-milk', itemId: 'Milch', specification: '' }];
+  const { plugin } = await signedIn(server);
+  const out = await plugin.action('add_items', {
+    items: [{ name: 'Milk', specification: 'oat' }, { name: 'milk' }, { name: 'Milch', specification: 'cow' }, { name: 'Milk', specification: 'Oat' }],
+  });
+  assert.strictEqual(out.ok.text, 'Added Milk (oat) (updated) and Milk (cow) to Zuhause.');
+  assert.deepStrictEqual(server.lists[LIST].purchase.map((i) => [i.uuid === 'u-milk', i.specification]), [[true, 'oat'], [false, 'cow']]);
+});
+
+test('a variant already on the list is kept, whatever order the variants are asked for in', async () => {
+  for (const order of [['oat', 'cow'], ['cow', 'oat']]) {
+    const server = fakeBring();
+    server.lists[LIST].purchase = [{ uuid: 'u-oat', itemId: 'Milch', specification: 'oat' }];
+    const { plugin } = await signedIn(server);
+    const out = await plugin.action('add_items', { items: order.map((specification) => ({ name: 'Milk', specification })) });
+    assert.strictEqual(out.ok.text, 'Added Milk (cow) to Zuhause. Milk (oat) was already on it.', order.join());
+    assert.deepStrictEqual(server.lists[LIST].purchase.map((i) => [i.uuid === 'u-oat', i.specification]).sort(),
+      [[false, 'cow'], [true, 'oat']], order.join());
+  }
+});
+
+test('a variant in "recently used" moves back as it is, and other saved variants are left alone', async () => {
+  const saved = () => [{ uuid: 'r-oat', itemId: 'Milch', specification: 'oat' }, { uuid: 'r-cow', itemId: 'Milch', specification: 'cow' }];
+  let server = fakeBring();
+  server.lists[LIST].recently = saved();
+  let plugin = (await signedIn(server)).plugin;
+  let out = await plugin.action('add_items', { items: [{ name: 'Milk', specification: 'cow' }] });
+  assert.strictEqual(out.ok.text, 'Added Milk (cow) to Zuhause.');
+  assert.deepStrictEqual(lastPut(server).changes.map((c) => [c.uuid, c.spec]), [['r-cow', 'cow']]);
+  assert.deepStrictEqual(server.lists[LIST].recently.map((i) => [i.uuid, i.specification]), [['r-oat', 'oat']]);
+  // Several variants saved: none of them is turned into another one, whatever the order asked in.
+  for (const [asked, kept] of [[['soy', 'oat'], 'cow'], [['oat', 'soy'], 'cow'], [['cow', 'soy'], 'oat'], [['soy', 'cow'], 'oat']]) {
+    server = fakeBring();
+    server.lists[LIST].recently = saved();
+    plugin = (await signedIn(server)).plugin;
+    out = await plugin.action('add_items', { items: asked.map((specification) => ({ name: 'Milk', specification })) });
+    assert.ok(out.ok, asked.join() + ': ' + JSON.stringify(out));
+    assert.deepStrictEqual(server.lists[LIST].recently.map((i) => i.specification), [kept], asked.join());
+    assert.deepStrictEqual(server.lists[LIST].purchase.map((i) => i.specification).sort(), [...asked].sort(), asked.join());
+    const moved = server.lists[LIST].purchase.find((i) => i.specification !== 'soy');
+    assert.strictEqual(moved.uuid, 'r-' + moved.specification, asked.join());
+  }
+});
+
+test('asking again for a variant that was checked off moves it back, and the other one stays', async () => {
+  const server = fakeBring();
+  const { plugin } = await signedIn(server);
+  await plugin.action('add_items', { items: [{ name: 'Milk', specification: 'oat' }, { name: 'Milk', specification: 'cow' }] });
+  const cow = server.lists[LIST].purchase.find((i) => i.specification === 'cow');
+  assert.ok((await plugin.action('complete_item', { instanceId: cow.uuid })).ok);
+  const out = await plugin.action('add_items', { items: [{ name: 'Milk', specification: 'cow' }] });
+  assert.strictEqual(out.ok.text, 'Added Milk (cow) to Zuhause.');
+  assert.deepStrictEqual(server.lists[LIST].purchase.map((i) => i.specification).sort(), ['cow', 'oat']);
+  assert.deepStrictEqual(server.lists[LIST].recently, []);
 });
