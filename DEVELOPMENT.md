@@ -37,6 +37,8 @@ said, with the first letter capitalised.
 - `test/plugin.test.cjs`: unit tests. `scripts/try.mjs`: live harness.
 - `store/`: the store icon (`icon.svg`) and its PNG renders.
 - `.github/workflows/release.yml` and `cliff.toml`: the release workflow and how it computes versions and notes.
+- `.github/workflows/codeql.yml` and `.github/dependabot.yml`: code scanning and action updates. `SECURITY.md`:
+  how to report vulnerabilities. See [Repository security settings](#repository-security-settings).
 
 ## Build and sideload
 
@@ -126,6 +128,22 @@ Text for the listing:
 > Unofficial: not affiliated with, endorsed or sponsored by Bring! Labs AG. Bring! is a trademark of Bring!
 > Labs AG. Uses Bring!'s web API, which can change at any time. Your password goes only to Bring! and isn't
 > stored.
+
+## Repository security settings
+
+These are set on GitHub, not in files, so they're listed here:
+
+- **Secret scanning** with push protection. Its generic-pattern detection and validity checks need GitHub's paid
+  Secret Protection, so they're off.
+- **Dependabot** alerts and security updates. Version updates are configured in `.github/dependabot.yml`.
+- **Private vulnerability reporting**, which [SECURITY.md](SECURITY.md) points to.
+- **CodeQL** runs from `.github/workflows/codeql.yml`. Keep GitHub's default setup off, or GitHub rejects the
+  workflow's results.
+- **Rulesets**, with no bypass: `main` can't be force-pushed or deleted, and `v*` tags can't be moved or
+  deleted. To rewrite main's history or move a tag, switch the ruleset off under Settings → Rules first, then
+  back on.
+- **Immutable releases:** a published GitHub release's `.pbw` and tag can't change. To fix a bad release, make a
+  new one.
 
 ## Icon
 
