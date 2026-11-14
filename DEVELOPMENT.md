@@ -78,6 +78,21 @@ node scripts/try.mjs remove "Milch"            # delete a test item completely
 node scripts/try.mjs signout
 ```
 
+## Commit messages
+
+Write every commit message as a [Conventional Commit](https://www.conventionalcommits.org): `type(scope):
+description`, e.g. `fix(match): keep the catalog's spelling`. The scope is optional. The Release workflow computes
+the next version and the release notes from these messages (see [Publish](#publish)).
+
+- `feat:` for a change users notice, `fix:` for a bug fix they notice. These two go into the store's public
+  release notes, so write the description for users.
+- `docs:`, `refactor:`, `perf:`, `test:`, `build:`, `ci:` or `chore:` for everything else. These appear only in
+  the GitHub release.
+- `feat!:` (or a `BREAKING CHANGE:` footer) for a breaking change. It bumps the major version.
+
+A message that doesn't follow the format still bumps the patch version, but it lands under "Other" in the GitHub
+release and never reaches the store's notes.
+
 ## Publish
 
 Releases are made by [.github/workflows/release.yml](.github/workflows/release.yml). Run it from the Actions tab
