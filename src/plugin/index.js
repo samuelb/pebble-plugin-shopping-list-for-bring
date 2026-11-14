@@ -956,7 +956,12 @@ async function signIn(email, password) {
   writeLocal(STATE_KEY, null);
   await saveAuth(auth, session);
   await Pebble.secureStorage.removeItem(authKey(previous)); // a sign-in this one replaces
-  await syncAccount();
+  try {
+    await syncAccount();
+  } catch (e) {
+    // Signed in all the same: status() says what went wrong loading the lists.
+    if (e.code === 'AUTH_REQUIRED') throw e;
+  }
   Pebble.refreshSources(SOURCES);
   return status();
 }

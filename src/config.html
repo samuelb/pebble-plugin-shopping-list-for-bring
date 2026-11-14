@@ -111,6 +111,8 @@
 
     function show(result) {
       if (!result) return;
+      // A reply without signedIn is an error that doesn't change the account: keep the page as it is.
+      if (result.signedIn === undefined) return say(result.error || 'Something went wrong.');
       var signedIn = !!result.signedIn;
       document.getElementById('signIn').classList.toggle('hidden', signedIn);
       document.getElementById('account').classList.toggle('hidden', !signedIn);

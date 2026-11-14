@@ -793,3 +793,17 @@ test('asking again for a variant that was checked off moves it back, and the oth
   assert.deepStrictEqual(server.lists[LIST].purchase.map((i) => i.specification).sort(), ['cow', 'oat']);
   assert.deepStrictEqual(server.lists[LIST].recently, []);
 });
+
+test('a sign-in whose lists fail to load still signs in, and says what went wrong', async () => {
+  const server = fakeBring();
+  const fetch = server.fetch;
+  let failing = true;
+  server.fetch = async (url, init) => (failing && url.startsWith(API + 'bringusersettings/')
+    ? { status: 500, text: async () => 'oops' } : fetch(url, init));
+  const plugin = load(server);
+  const result = await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' });
+  assert.strictEqual(result.signedIn, true);
+  assert.match(result.error, /HTTP 500/);
+  failing = false;
+  assert.deepStrictEqual((await plugin.config({ type: 'refresh' })).lists.map((l) => l.name), ['Zuhause', 'Party']);
+});
