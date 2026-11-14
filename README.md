@@ -1,5 +1,7 @@
 # Shopping List for Bring!
 
+<img src="store/icon.svg" width="96" height="96" align="right" alt="Icon: a shopping bag in a speech bubble">
+
 A plugin for the Pebble app that adds things to your [Bring!](https://www.getbring.com) shopping lists by voice
 with the Index 01 ring and shows your lists on your Pebble.
 
