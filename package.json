@@ -1,14 +1,13 @@
 {
   "name": "shopping-list-for-bring",
   "author": "samuel",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Unofficial Pebble / Index 01 plugin that adds to Bring! shopping lists. Not affiliated with Bring! Labs AG.",
   "license": "Apache-2.0",
   "private": true,
   "keywords": ["pebble-plugin"],
   "scripts": {
-    "test": "node --test test/*.test.cjs",
-    "publish-store": "pebble publish --icon-small store/icon-80.png --icon-large store/icon-144.png"
+    "test": "node --test test/*.test.cjs"
   },
   "pebble": {
     "displayName": "Shopping List for Bring!",

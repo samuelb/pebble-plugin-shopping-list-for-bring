@@ -36,6 +36,7 @@ said, with the first letter capitalised.
   so the icon is inline SVG.
 - `test/plugin.test.cjs`: unit tests. `scripts/try.mjs`: live harness.
 - `store/`: the store icon (`icon.svg`) and its PNG renders.
+- `.github/workflows/release.yml` and `cliff.toml`: the release workflow and how it computes versions and notes.
 
 ## Build and sideload
 
@@ -50,6 +51,9 @@ pebble logs                         # the plugin's console.log lines show up her
 
 A sideloaded plugin shows a generic placeholder icon. The Pebble app takes plugin icons only from the store
 listing.
+
+A local build has version 0.0.0, the version in `package.json`. The SDK only takes numeric versions, so it can't
+say "dev". Releases get their version from the Release workflow (see [Publish](#publish)).
 
 ## Test
 
@@ -76,15 +80,28 @@ node scripts/try.mjs signout
 
 ## Publish
 
-```sh
-pebble login
-npm run publish-store               # pebble publish --icon-small store/icon-80.png --icon-large store/icon-144.png
-```
+Releases are made by [.github/workflows/release.yml](.github/workflows/release.yml). Run it from the Actions tab
+or with `gh workflow run release.yml`. It:
 
-The first run creates the store listing and asks for a name, description and plugin category. The icons only
-apply then; change them later in the [developer dashboard](https://developer.repebble.com/dashboard). In
-pebble-tool 5.1.2 the listing goes public right away, whatever `--is-published` says. For a new release, raise
-`version` in `package.json` and run `pebble publish --release-notes "…"`.
+1. Computes the next version from the commits since the last `vX.Y.Z` tag, with [git-cliff](https://git-cliff.org)
+   ([cliff.toml](cliff.toml)). `feat:` bumps the minor version, a breaking change (`feat!:`) the major version,
+   and anything else the patch version. The `bump` input can force one.
+2. Tests the plugin, and builds it with that version.
+3. Uploads it to the store, where it goes live right away. The store's release notes list the `feat:` and `fix:`
+   commits, or say "Maintenance release.". The `notes` input replaces them.
+4. Tags the commit and creates a GitHub release, with notes for every commit and the `.pbw` attached.
+
+So write user-facing changes as `feat: …` or `fix: …` commits: their text is what store users read.
+`-f dry_run=true` builds and renders the notes without publishing; the run's artifacts hold them. The workflow
+signs in to the store with the repo's GitHub OIDC token, so it needs no secret. If a run fails after the store
+upload, re-run its failed jobs rather than starting a new run.
+
+The version lives only in the tags: `package.json` stays at 0.0.0, and the workflow sets the release version in
+before it builds. Don't publish with `pebble publish` by hand, because it would upload 0.0.0 and leave no tag.
+
+The store listing was created with `pebble publish --icon-small store/icon-80.png --icon-large
+store/icon-144.png`, as version 0.1.0 (tag `v0.1.0`). Its name, text, category and icons can be changed only in
+the [developer dashboard](https://developer.repebble.com/dashboard).
 
 Text for the listing:
 

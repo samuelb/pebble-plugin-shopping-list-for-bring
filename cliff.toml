@@ -1,0 +1,40 @@
+# git-cliff configuration (https://git-cliff.org). The Release workflow uses it to compute the next version
+# from the commits since the last vX.Y.Z tag, and to write the GitHub release notes.
+#
+# Commits should follow Conventional Commits: feat: bumps the minor version, fix: and everything else the patch
+# version, and a breaking change (feat!: or a BREAKING CHANGE: footer) the major version. Commits that don't
+# follow it land in "Other" rather than being dropped.
+
+[changelog]
+header = "## Changes\n"
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}\
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }} ({{ commit.id | truncate(length=7, end="") }})
+{% endfor %}\
+{% endfor %}
+{% if previous.version %}\
+**Full Changelog**: https://github.com/samuelb/pebble-plugin-shopping-list-for-bring/compare/{{ previous.version }}...{{ version }}
+{% endif %}\
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+sort_commits = "newest"
+commit_parsers = [
+  { message = "^Merge ", skip = true },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Testing" },
+  { message = "^(build|ci|chore)", group = "<!-- 6 -->Miscellaneous" },
+  { message = ".*", group = "<!-- 7 -->Other" },
+]
