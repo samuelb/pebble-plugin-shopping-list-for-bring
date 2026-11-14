@@ -88,10 +88,9 @@ or with `gh workflow run release.yml`. It:
    and anything else the patch version. The `bump` input can force one.
 2. Tests the plugin, and builds it with that version.
 3. Uploads it to the store, where it goes live right away. The store's release notes list the `feat:` and `fix:`
-   commits, or say "Maintenance release.". The `notes` input replaces them.
+   commits, or say "Maintenance release.".
 4. Tags the commit and creates a GitHub release, with notes for every commit and the `.pbw` attached.
 
-So write user-facing changes as `feat: …` or `fix: …` commits: their text is what store users read.
 `-f dry_run=true` builds and renders the notes without publishing; the run's artifacts hold them. The workflow
 signs in to the store with the repo's GitHub OIDC token, so it needs no secret. If a run fails after the store
 upload, re-run its failed jobs rather than starting a new run.

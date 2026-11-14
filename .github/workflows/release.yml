@@ -20,10 +20,6 @@ on:
         type: choice
         options: [auto, patch, minor, major]
         default: auto
-      notes:
-        description: "Release notes for the store (default: the feat and fix commits)"
-        type: string
-        required: false
       dry_run:
         description: "Build and render the release notes without publishing"
         type: boolean
@@ -74,7 +70,6 @@ jobs:
         id: next
         env:
           BUMP: ${{ inputs.bump }}
-          NOTES: ${{ inputs.notes }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           cliff() { uvx git-cliff@2.14.2 --unreleased --bump="$BUMP" "$@"; }
@@ -94,13 +89,10 @@ jobs:
           mkdir notes
           cliff -o notes/release-notes.md
           # The store's notes are public: only the user-facing changes, without commit ids or links.
-          if [ -z "$NOTES" ]; then
-            NOTES=$(cliff --context | jq -r '
-              [.[0].commits[] | select(.group | test("Features|Bug Fixes"))
-                | .message | split("\n")[0] | "- " + (.[:1] | ascii_upcase) + .[1:]]
-              | if length > 0 then join("\n") else "Maintenance release." end')
-          fi
-          printf '%s\n' "$NOTES" > notes/store-notes.txt
+          cliff --context | jq -r '
+            [.[0].commits[] | select(.group | test("Features|Bug Fixes"))
+              | .message | split("\n")[0] | "- " + (.[:1] | ascii_upcase) + .[1:]]
+            | if length > 0 then join("\n") else "Maintenance release." end' > notes/store-notes.txt
 
           for f in notes/*; do echo "----- $f"; cat "$f"; done
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
