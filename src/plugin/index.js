@@ -297,9 +297,12 @@ async function refreshAuth(auth) {
 
 function httpError(response, operation) {
   console.log('Bring: failed to ' + operation + ': HTTP ' + response.status + ' ' + response.text);
-  if (response.status === 401 || response.status === 403) return signInError();
-  if (response.status === 429) return fail('RATE_LIMITED', 'Bring! is rate-limiting requests. Try again in a minute.');
-  return fail('PLUGIN_UNAVAILABLE', 'Bring! couldn\'t ' + operation + ' (HTTP ' + response.status + ').');
+  var error;
+  if (response.status === 401 || response.status === 403) error = signInError();
+  else if (response.status === 429) error = fail('RATE_LIMITED', 'Bring! is rate-limiting requests. Try again in a minute.');
+  else error = fail('PLUGIN_UNAVAILABLE', 'Bring! couldn\'t ' + operation + ' (HTTP ' + response.status + ').');
+  error.status = response.status;
+  return error;
 }
 
 // An authorized request: renews the token when it has expired or Bring! rejects it once.
@@ -413,14 +416,44 @@ function orderedLists(state) {
 // Words that mean "the shopping list" rather than naming one of several lists.
 var GENERIC_LIST_NAMES = /^(?:(?:my|our|the|meine?|unsere?|die)\s+)?(?:bring!?|shopping|groceries|grocery|einkauf|einkäufe|einkaufen|einkaufsliste|einkaufszettel|list|liste)(?:\s+(?:list|liste))?$/i;
 
+// The words around a list's name when it's said, dropped a step at a time.
+var LIST_ARTICLE = /^(?:my|our|the|meine?|unsere?|die)\s+(?=\S)/;
+var LIST_SUFFIX = /(\S)\s+(?:list|liste)$/;
+var SHOPPING_LIST_SUFFIX = /(\S)\s+(?:(?:shopping|grocery|groceries)\s+(?:list|liste)|einkaufs(?:liste|zettel))$/;
+
+// A name as said, from the strictest form to the loosest, one word dropped at a time: "Our
+// weekend shopping list" -> "our weekend shopping list", "our weekend shopping",
+// "weekend shopping list", "weekend shopping", "weekend".
+function listNameForms(name) {
+  var folded = fold(name);
+  var bare = folded.replace(LIST_ARTICLE, '');
+  return [
+    folded,
+    folded.replace(LIST_SUFFIX, '$1'),
+    bare,
+    bare.replace(LIST_SUFFIX, '$1'),
+    bare.replace(SHOPPING_LIST_SUFFIX, '$1').replace(LIST_SUFFIX, '$1'),
+  ];
+}
+
+// { list } with this name or, a step at a time, with this name once the words around it are
+// dropped; { several } when the first step that finds any finds more than one (and the default
+// list isn't among them); {} when none fits. Whole names only, never a word inside one ("Shop"
+// isn't the "shopping list").
 function listByName(state, name) {
-  var wanted = fold(name);
-  var lists = state.lists;
-  var match = function (test) { return lists.filter(function (list) { return test(fold(list.name)); }); };
-  var exact = match(function (n) { return n === wanted; });
-  if (exact.length) return exact[0];
-  var partial = match(function (n) { return n.indexOf(wanted) === 0 || wanted.indexOf(n) >= 0 || n.indexOf(wanted) >= 0; });
-  return partial.length === 1 ? partial[0] : null;
+  var wanted = listNameForms(name);
+  var forms = state.lists.map(function (list) { return listNameForms(list.name); });
+  for (var step = 0; step < wanted.length; step++) {
+    var found = state.lists.filter(function (list, i) { return forms[i][step] === wanted[step]; });
+    if (found.length === 1) return { list: found[0] };
+    if (found.length) {
+      // Of lists that fit as well as each other, the default one is the one the user goes by.
+      var preferred = defaultListUuid(state);
+      var mine = found.filter(function (list) { return list.uuid === preferred; })[0];
+      return mine ? { list: mine } : { several: found };
+    }
+  }
+  return {};
 }
 
 // args.list (a name) or args.instanceId (a list uuid, or a name), else the default list.
@@ -432,16 +465,22 @@ async function resolveList(args) {
   if (id && hasList(state, id)) uuid = id;
   else if (id || name) {
     var wanted = name || id;
-    var found = listByName(state, wanted);
-    if (!found && !hasList(state, id)) {
+    var match = listByName(state, wanted);
+    // Not a list we know of, nor a generic name: it may be a list made since the last sync.
+    if (!match.list && !match.several && !GENERIC_LIST_NAMES.test(wanted)) {
       state = await freshState(true);
-      found = hasList(state, id) ? { uuid: id } : listByName(state, wanted);
+      match = hasList(state, id) ? { list: { uuid: id } } : listByName(state, wanted);
+      if (!match.list && !match.several) {
+        throw fail('INVALID_ARGS', 'There is no Bring! list called "' + wanted + '". The lists are: ' +
+          state.lists.map(function (list) { return list.name; }).join(', ') + '.');
+      }
     }
-    if (found) uuid = found.uuid;
-    else if (!GENERIC_LIST_NAMES.test(wanted)) {
-      throw fail('INVALID_ARGS', 'There is no Bring! list called "' + wanted + '". The lists are: ' +
-        state.lists.map(function (list) { return list.name; }).join(', ') + '.');
+    // Never a guess between lists, generic name or not.
+    if (match.several) {
+      throw fail('INVALID_ARGS', 'More than one Bring! list fits "' + wanted + '": ' +
+        match.several.map(function (list) { return list.name; }).join(', ') + '. Say the whole name.');
     }
+    if (match.list) uuid = match.list.uuid;
   }
   uuid = uuid || defaultListUuid(state);
   if (!uuid) throw fail('PLUGIN_UNAVAILABLE', 'Your Bring! account has no lists.');
@@ -564,6 +603,22 @@ async function loadItems(listUuid) {
   };
 }
 
+// The list a request is for, with its catalog and items. A list deleted or left since the last
+// sync answers 404: then sync, and resolve the list again (the default may have moved on).
+async function openList(args) {
+  var list = await resolveList(args);
+  var current;
+  try {
+    current = await loadItems(list.uuid);
+  } catch (e) {
+    if (e.status !== 404) throw e;
+    await freshState(true);
+    list = await resolveList(args);
+    current = await loadItems(list.uuid);
+  }
+  return { list: list, catalog: await loadCatalog(list.locale), current: current };
+}
+
 function findItem(items, itemId) {
   var wanted = fold(itemId);
   for (var i = 0; i < items.length; i++) {
@@ -627,9 +682,10 @@ function normalizeItems(args) {
 async function addItems(args, items) {
   if (!items.length) throw fail('INVALID_ARGS', 'Say what to add, e.g. "milk and 6 eggs".');
   if (items.length > MAX_ITEMS_PER_ACTION) throw fail('INVALID_ARGS', 'That\'s more than ' + MAX_ITEMS_PER_ACTION + ' items at once.');
-  var list = await resolveList(args);
-  var catalog = await loadCatalog(list.locale);
-  var current = await loadItems(list.uuid);
+  var opened = await openList(args);
+  var list = opened.list;
+  var catalog = opened.catalog;
+  var current = opened.current;
 
   var changes = [];
   var added = [];
@@ -673,9 +729,10 @@ async function completeItem(args) {
   var name = typeof args.name === 'string' ? args.name.trim() : '';
   var id = typeof args.instanceId === 'string' ? args.instanceId.trim() : '';
   if (!name && !id) throw fail('INVALID_ARGS', 'Say which item to check off.');
-  var list = await resolveList({ list: args.list });
-  var catalog = await loadCatalog(list.locale);
-  var current = await loadItems(list.uuid);
+  var opened = await openList({ list: args.list });
+  var list = opened.list;
+  var catalog = opened.catalog;
+  var current = opened.current;
   var item = null;
   if (id) {
     item = current.purchase.filter(function (entry) { return entry && (entry.uuid === id || entry.itemId === id); })[0];
@@ -695,10 +752,10 @@ async function completeItem(args) {
 }
 
 async function readList(args) {
-  var list = await resolveList(args);
-  var catalog = await loadCatalog(list.locale);
-  var current = await loadItems(list.uuid);
-  var names = current.purchase.map(function (item) {
+  var opened = await openList(args);
+  var list = opened.list;
+  var catalog = opened.catalog;
+  var names = opened.current.purchase.map(function (item) {
     return describe(displayName(item.itemId, catalog), item.specification);
   });
   var others = list.state.lists.filter(function (l) { return l.uuid !== list.uuid; })
@@ -754,6 +811,18 @@ function count(value, unit) {
 
 async function listsData() {
   var state = await freshState(false);
+  var instances;
+  try {
+    instances = await listInstances(state);
+  } catch (e) {
+    if (e.status !== 404) throw e;
+    // A list was deleted or left since the last sync.
+    instances = await listInstances(await freshState(true));
+  }
+  return { validUntilMs: Date.now() + SOURCE_TTL_MS, instances: instances };
+}
+
+async function listInstances(state) {
   var lists = orderedLists(state);
   var instances = [];
   for (var i = 0; i < lists.length; i++) {
@@ -772,16 +841,16 @@ async function listsData() {
       },
     });
   }
-  return { validUntilMs: Date.now() + SOURCE_TTL_MS, instances: instances };
+  return instances;
 }
 
 async function itemsData() {
-  var list = await resolveList({});
-  var catalog = await loadCatalog(list.locale);
-  var items = await loadItems(list.uuid);
+  var opened = await openList({});
+  var list = opened.list;
+  var catalog = opened.catalog;
   return {
     validUntilMs: Date.now() + SOURCE_TTL_MS,
-    instances: items.purchase.map(function (item) {
+    instances: opened.current.purchase.map(function (item) {
       var properties = {
         name: texts(displayName(item.itemId, catalog)),
         list: shortText(list.name),

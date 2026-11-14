@@ -96,7 +96,7 @@
             "required": ["items"],
             "additionalProperties": false
           },
-          "targets": ["shopping/list", "shopping/item"],
+          "targets": ["shopping/list"],
           "destructive": false,
           "requiresConfirmation": false,
           "callerPermissions": []

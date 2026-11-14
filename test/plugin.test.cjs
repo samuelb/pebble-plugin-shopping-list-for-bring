@@ -636,3 +636,87 @@ test('a sign-out stays signed out after the Pebble app was reinstalled', async (
   assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, false);
   assert.strictEqual((await plugin.action('add_items', { items: [{ name: 'Milk' }] })).error.code, 'AUTH_REQUIRED');
 });
+
+test('a list is picked by its name, never by a word that happens to contain it', async () => {
+  const server = fakeBring();
+  server.lists['list-shop'] = { name: 'Shop', purchase: [], recently: [] };
+  const { plugin } = await signedIn(server);
+  const before = server.requests.length;
+  let out = await plugin.action('add_items', { items: [{ name: 'Milk' }], list: 'shopping list' });
+  assert.strictEqual(out.ok.text, 'Added Milk to Zuhause.');
+  // A generic name means the default list, without reloading the account first.
+  assert.ok(!server.requests.slice(before).some((r) => r.url.includes('bringusers')));
+  out = await plugin.action('add_items', { items: [{ name: 'Milk' }], list: 'Office Party' });
+  assert.strictEqual(out.error.code, 'INVALID_ARGS');
+  out = await plugin.action('add_items', { items: [{ name: 'Eggs' }], list: 'the shop list' });
+  assert.strictEqual(out.ok.text, 'Added Eggs to Shop.');
+});
+
+test('add_items only takes list ids, as its targets say', () => {
+  // targets are the sources whose instanceId an action takes; add_items treats it as a list.
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8')).pebble.plugin;
+  assert.deepStrictEqual(manifest.actions.find((a) => a.name === 'add_items').targets, ['shopping/list']);
+});
+
+test('a list deleted in the Bring! app is noticed straight away', async () => {
+  const { server, plugin } = await signedIn();
+  delete server.lists[PARTY];
+  const lists = (await plugin.source('shopping', 'list')).data.instances;
+  assert.deepStrictEqual(lists.map((i) => i.instanceId), [LIST]);
+  delete server.lists[LIST];
+  server.lists['list-new'] = { name: 'Neu', purchase: [], recently: [] };
+  const out = await plugin.action('add_items', { items: [{ name: 'Milk' }] });
+  assert.strictEqual(out.ok && out.ok.text, 'Added Milk to Neu.', JSON.stringify(out));
+});
+
+test('a list whose name sounds generic is reached by that name, with the words around it', async () => {
+  const cases = [
+    ['Groceries', 'groceries list'], ['Groceries', 'the groceries list'], ['Shopping', 'the shopping list'],
+    ['Einkaufsliste', 'die Einkaufsliste'], ['Weekend Shopping', 'weekend shopping list'],
+  ];
+  for (const [listName, said] of cases) {
+    const server = fakeBring();
+    server.lists['list-x'] = { name: listName, purchase: [], recently: [] };
+    if (listName === 'Weekend Shopping') server.lists['list-w'] = { name: 'Weekend', purchase: [], recently: [] };
+    const { plugin } = await signedIn(server);
+    const out = await plugin.action('add_items', { items: [{ name: 'Tofu' }], list: said });
+    assert.strictEqual(out.ok && out.ok.text, `Added Tofu to ${listName}.`, said + ': ' + JSON.stringify(out));
+  }
+});
+
+test('of lists with the same name, the default one is used, and otherwise none is guessed', async () => {
+  const server = fakeBring();
+  server.lists = { 'list-a': { name: 'Party', purchase: [], recently: [] }, 'list-b': { name: 'Party', purchase: [], recently: [] } };
+  server.listLanguages = {};
+  const { plugin } = await signedIn(server);
+  await plugin.config({ type: 'setDefaultList', listUuid: 'list-b' });
+  let out = await plugin.action('add_items', { items: [{ name: 'Milk' }], list: 'Party' });
+  assert.ok(out.ok, JSON.stringify(out));
+  assert.ok(lastPut(server) && server.requests.filter((r) => r.method === 'PUT').pop().url.includes('list-b'));
+  server.lists['list-c'] = { name: 'Zuhause', purchase: [], recently: [] };
+  await plugin.config({ type: 'refresh' });
+  await plugin.config({ type: 'setDefaultList', listUuid: 'list-c' });
+  const puts = server.requests.filter((r) => r.method === 'PUT').length;
+  out = await plugin.action('add_items', { items: [{ name: 'Milk' }], list: 'the party list' });
+  assert.strictEqual(out.error && out.error.code, 'INVALID_ARGS', JSON.stringify(out));
+  assert.match(out.error.message, /More than one Bring! list fits/);
+  assert.strictEqual(server.requests.filter((r) => r.method === 'PUT').length, puts);
+});
+
+test('lists that differ only by "my" and "our" are told apart', async () => {
+  const server = fakeBring();
+  server.lists = { 'list-my': { name: 'My Groceries', purchase: [], recently: [] }, 'list-our': { name: 'Our Groceries', purchase: [], recently: [] } };
+  server.listLanguages = {};
+  const { plugin } = await signedIn(server);
+  await plugin.config({ type: 'setDefaultList', listUuid: 'list-my' });
+  const goesTo = async (said, item) => {
+    const out = await plugin.action('add_items', { items: [{ name: item }], list: said });
+    assert.ok(out.ok, said + ': ' + JSON.stringify(out));
+    return /to (.+)\.$/.exec(out.ok.text)[1];
+  };
+  assert.strictEqual(await goesTo('our groceries list', 'Tofu'), 'Our Groceries');
+  assert.strictEqual(await goesTo('Our Groceries', 'Rice'), 'Our Groceries');
+  assert.strictEqual(await goesTo('our groceries', 'Beans'), 'Our Groceries');
+  // Without "my" or "our" the words fit both: the default one is used.
+  assert.strictEqual(await goesTo('groceries list', 'Salt'), 'My Groceries');
+});
