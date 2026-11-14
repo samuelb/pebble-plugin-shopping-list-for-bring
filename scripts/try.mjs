@@ -4,7 +4,7 @@
 //
 // Runs src/plugin/index.js against the real Bring! API, with a stand-in for the Pebble runtime,
 // so the plugin can be tried without a phone. Storage (including the sign-in token) is kept in a
-// private file in the system temp directory; `signout` deletes it.
+// private file in your home directory; `signout` deletes it.
 //
 //   BRING_EMAIL=you@example.com BRING_PASSWORD=... node scripts/try.mjs signin
 //   node scripts/try.mjs status
@@ -21,48 +21,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = fs.readFileSync(path.join(root, 'src/plugin/index.js'), 'utf8');
-const storeFile = path.join(os.tmpdir(), 'pebble-bring-plugin-dev.json');
-
-// The temp directory may be shared with other users: only use a store file that is a regular file
-// of ours (never through a symlink), and keep it private even if it was made with looser modes.
-function openStore(flags) {
-  const fd = fs.openSync(storeFile, flags | (fs.constants.O_NOFOLLOW || 0), 0o600);
-  try {
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile() || (process.getuid && stat.uid !== process.getuid())) {
-      throw new Error(`${storeFile} isn't a file of yours. Delete it and try again.`);
-    }
-    if (process.platform !== 'win32' && (stat.mode & 0o077)) fs.fchmodSync(fd, 0o600);
-    return fd;
-  } catch (e) {
-    fs.closeSync(fd);
-    throw e;
-  }
-}
-function loadStore() {
-  let fd;
-  try {
-    fd = openStore(fs.constants.O_RDONLY);
-  } catch (e) {
-    if (e.code === 'ENOENT') return { local: {}, secure: {} };
-    throw e;
-  }
-  try {
-    return JSON.parse(fs.readFileSync(fd, 'utf8'));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-const store = loadStore();
-const save = () => {
-  const fd = openStore(fs.constants.O_WRONLY | fs.constants.O_CREAT);
-  try {
-    fs.ftruncateSync(fd, 0);
-    fs.writeSync(fd, JSON.stringify(store, null, 2), 0);
-  } finally {
-    fs.closeSync(fd);
-  }
-};
+// In the user's home rather than the temp directory, which other users may share.
+const storeFile = path.join(os.homedir(), '.pebble-bring-plugin-dev.json');
+const store = fs.existsSync(storeFile) ? JSON.parse(fs.readFileSync(storeFile, 'utf8')) : { local: {}, secure: {} };
+const save = () => fs.writeFileSync(storeFile, JSON.stringify(store, null, 2), { mode: 0o600 });
 const area = (name) => ({
   getItem: (k) => (k in store[name] ? store[name][k] : null),
   setItem: (k, v) => { store[name][k] = String(v); save(); },

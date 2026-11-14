@@ -65,7 +65,7 @@ npm test                            # unit tests against a fake Bring! server (N
 
 `scripts/try.mjs` runs the plugin script against the real Bring! API with a stand-in Pebble runtime. It writes to
 real lists, so use a clearly named test item and remove it afterwards. The sign-in token is kept in a private
-file in the system temp directory until `signout`.
+file in your home directory (`~/.pebble-bring-plugin-dev.json`) until `signout`.
 
 ```sh
 BRING_EMAIL=you@example.com BRING_PASSWORD='…' node scripts/try.mjs signin
