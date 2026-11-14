@@ -1,12 +1,24 @@
-# Shopping List for Bring!
+<p align="center">
+  <img src="store/icon.svg" width="128" height="128" alt="Icon: a shopping bag in a speech bubble">
+</p>
 
-<img src="store/icon.svg" width="96" height="96" align="right" alt="Icon: a shopping bag in a speech bubble">
+<h1 align="center">Shopping List for Bring!</h1>
 
-A plugin for the Pebble app that adds things to your [Bring!](https://www.getbring.com) shopping lists by voice
-with the Index 01 ring and shows your lists on your Pebble.
+<p align="center">
+  A plugin for the Pebble app that adds things to your <a href="https://www.getbring.com">Bring!</a> shopping
+  lists<br>by voice with the Index 01 ring and shows your lists on your Pebble.
+</p>
 
-**Developers:** to build, test, sideload or publish the plugin, or to see how it works, read
-**[DEVELOPMENT.md](DEVELOPMENT.md)**.
+<p align="center">
+  <a href="https://apps.repebble.com/5e2b3937f0814d3e944258a5"><img src="https://img.shields.io/badge/Pebble_app_store-install-118072" alt="Install from the Pebble app store"></a>
+  <a href="https://github.com/samuelb/pebble-plugin-shopping-list-for-bring/releases/latest"><img src="https://img.shields.io/github/v/release/samuelb/pebble-plugin-shopping-list-for-bring?color=118072" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-118072" alt="License: Apache 2.0"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> · <a href="#using-it-with-index">Using it with Index</a> ·
+  <a href="PRIVACY.md">Privacy</a> · <a href="DEVELOPMENT.md">Developers</a>
+</p>
 
 > **Unofficial.** Not affiliated with, endorsed, sponsored or approved by Bring! Labs AG. "Bring!" is a
 > trademark of Bring! Labs AG and is used here only to say which service this works with. Bring! has no public
