@@ -2,7 +2,7 @@
   <img src="store/icon.svg" width="128" height="128" alt="Icon: a shopping bag in a speech bubble">
 </p>
 
-<h1 align="center">Shopping List for Bring!</h1>
+<h1 align="center">Shopping List for Bring! – Pebble Plugin</h1>
 
 <p align="center">
   A plugin for the Pebble app that adds things to your <a href="https://www.getbring.com">Bring!</a> shopping
