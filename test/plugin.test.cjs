@@ -821,6 +821,42 @@ test('a sign-in whose lists fail to load still signs in, and says what went wron
   assert.deepStrictEqual((await plugin.config({ type: 'refresh' })).lists.map((l) => l.name), ['Zuhause', 'Party']);
 });
 
+// Answers GETs to `route` with a body that can't be read, isn't JSON, or is JSON without the data.
+function unreadable(server, route, how) {
+  const fetch = server.fetch;
+  server.fetch = async (url, init = {}) => {
+    if (url !== API + route || (init.method || 'GET') !== 'GET') return fetch(url, init);
+    server.requests.push({ url, method: 'GET', headers: init.headers || {} });
+    if (how === 'throws') return { status: 200, text: async () => { throw new TypeError('body stream broke'); } };
+    return { status: 200, text: async () => (how === 'html' ? '<html>Bad gateway</html>' : '{}') };
+  };
+}
+
+test('a list whose contents can\'t be read is not taken for an empty one', async () => {
+  for (const how of ['throws', 'html', 'empty']) {
+    const server = fakeBring();
+    server.lists[LIST].purchase = [{ uuid: 'u-milk', itemId: 'Milch', specification: '' }];
+    const { plugin } = await signedIn(server);
+    unreadable(server, `v2/bringlists/${LIST}`, how);
+    const out = await plugin.action('add_items', { items: [{ name: 'Milk' }] });
+    assert.strictEqual(out.error && out.error.code, 'PLUGIN_UNAVAILABLE', how + ': ' + JSON.stringify(out));
+    assert.match(out.error.message, /couldn't be read while trying to load the list/, how);
+    assert.ok(!server.requests.some((r) => r.method === 'PUT'), how);
+  }
+});
+
+test('lists that can\'t be read leave the saved ones as they are', async () => {
+  for (const how of ['throws', 'html', 'empty']) {
+    const { server, plugin } = await signedIn();
+    const saved = plugin.local.get('bring.state.v1');
+    unreadable(server, `bringusers/${USER}/lists`, how);
+    const status = await plugin.config({ type: 'refresh' });
+    assert.ok(server.requests.some((r) => r.url === API + `bringusers/${USER}/lists` && !r.body), how);
+    assert.deepStrictEqual(status.lists.map((l) => l.name), ['Zuhause', 'Party'], how);
+    assert.strictEqual(plugin.local.get('bring.state.v1'), saved, how);
+  }
+});
+
 test('catalogs that can\'t be had are asked for once, not for every item', async () => {
   const server = fakeBring();
   const { plugin } = await signedIn(server);

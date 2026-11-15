@@ -294,6 +294,10 @@ function httpError(response, operation) {
   return error;
 }
 
+function unreadableError(operation) {
+  return fail('PLUGIN_UNAVAILABLE', 'Bring!\'s answer couldn\'t be read while trying to ' + operation + '.');
+}
+
 // An authorized request: renews the token when it has expired or Bring! rejects it once.
 async function api(method, path, body, operation) {
   var auth = await loadAuth();
@@ -305,6 +309,11 @@ async function api(method, path, body, operation) {
     response = await send(method, path, body, auth);
   }
   if (response.status < 200 || response.status >= 300) throw httpError(response, operation);
+  // An answer that isn't JSON would read as an empty list, and lead to duplicates or lost lists.
+  if (method === 'GET' && !(response.json && typeof response.json === 'object')) {
+    console.log('Bring: failed to ' + operation + ': unreadable answer ' + response.text);
+    throw unreadableError(operation);
+  }
   return response.json;
 }
 
@@ -332,10 +341,12 @@ async function syncAccount() {
   var account = await api('GET', 'v2/bringusers/' + encodeURIComponent(auth.uuid), undefined, 'load your account');
   var settings = await api('GET', 'bringusersettings/' + encodeURIComponent(auth.uuid), undefined, 'load your settings');
   var lists = await api('GET', 'bringusers/' + encodeURIComponent(auth.uuid) + '/lists', undefined, 'load your lists');
+  // Not "no lists": the cached ones are better than none.
+  if (!Array.isArray(lists.lists)) throw unreadableError('load your lists');
 
   var userLocale = account && account.userLocale || {};
   var state = {
-    lists: ((lists && lists.lists) || [])
+    lists: lists.lists
       .filter(function (list) { return list && typeof list.listUuid === 'string' && list.listUuid; })
       .map(function (list) { return { uuid: list.listUuid, name: String(list.name || '').trim() || 'Shopping list' }; }),
     listLocales: {},
@@ -593,7 +604,9 @@ function parseItems(text) {
 
 async function loadItems(listUuid) {
   var json = await api('GET', 'v2/bringlists/' + encodeURIComponent(listUuid), undefined, 'load the list');
-  var items = (json && json.items) || {};
+  var items = json.items;
+  // Not an empty list: adding to it would make duplicates of what's there.
+  if (!items || typeof items !== 'object') throw unreadableError('load the list');
   return {
     purchase: Array.isArray(items.purchase) ? items.purchase : [],
     recently: Array.isArray(items.recently) ? items.recently : [],
