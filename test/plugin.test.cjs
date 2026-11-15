@@ -589,8 +589,27 @@ test('a token read that a new sign-in overtook is not used to sign that one out'
   const out = await pending;
   // The request began before the sign-out: it may fail, but must not touch the new sign-in.
   assert.strictEqual(out.error && out.error.code, 'AUTH_REQUIRED', JSON.stringify(out));
+  assert.ok(!server.requests.some((r) => r.method === 'PUT'));
   assert.strictEqual(storedAuth(plugin).accessToken, 'token-100');
   assert.strictEqual((await plugin.config({ type: 'status' })).signedIn, true);
+});
+
+test('an action a sign-in overtook doesn\'t write to the list with the new sign-in', async () => {
+  const { server, plugin } = await signedIn();
+  // Hold the catalog download, after the action found its list, until the user has signed in again.
+  const gate = hold(server, (url) => url.startsWith('https://web.getbring.com/'));
+  const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
+  await gate.started;
+  await plugin.config({ type: 'signOut' });
+  server.token = 'token-100';
+  assert.strictEqual((await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' })).signedIn, true);
+  gate.release();
+  const out = await pending;
+  assert.strictEqual(out.error && out.error.code, 'AUTH_REQUIRED', JSON.stringify(out));
+  assert.ok(!server.requests.some((r) => r.method === 'PUT' && r.headers.Authorization === 'Bearer token-100'));
+  assert.ok(!server.requests.some((r) => r.method === 'PUT'));
+  assert.strictEqual(storedAuth(plugin).accessToken, 'token-100');
+  assert.ok((await plugin.action('add_items', { items: [{ name: 'Milk' }] })).ok);
 });
 
 test('a sign-out stays signed out after the Pebble app was reinstalled', async () => {

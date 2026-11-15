@@ -298,14 +298,18 @@ function unreadableError(operation) {
   return fail('PLUGIN_UNAVAILABLE', 'Bring!\'s answer couldn\'t be read while trying to ' + operation + '.');
 }
 
-// An authorized request: renews the token when it has expired or Bring! rejects it once.
-async function api(method, path, body, operation) {
-  var auth = await loadAuth();
-  if (!auth) throw signInError();
-  if (!auth.expiresAt || Date.now() > auth.expiresAt - 60 * 1000) auth = await refreshAuth(auth);
+// An authorized request: renews the token when it has expired or Bring! rejects it once. Given
+// the session a caller began in, only with that sign-in's tokens, never a newer one's.
+async function api(method, path, body, operation, session) {
+  var signedInAs = function (auth) {
+    if (!auth || (session !== undefined && auth.session !== session)) throw signInError();
+    return auth;
+  };
+  var auth = signedInAs(await loadAuth());
+  if (!auth.expiresAt || Date.now() > auth.expiresAt - 60 * 1000) auth = signedInAs(await refreshAuth(auth));
   var response = await send(method, path, body, auth);
   if (response.status === 401) {
-    auth = await refreshAuth(auth);
+    auth = signedInAs(await refreshAuth(auth));
     response = await send(method, path, body, auth);
   }
   if (response.status < 200 || response.status >= 300) throw httpError(response, operation);
@@ -456,7 +460,9 @@ function listByName(state, name) {
 }
 
 // args.list (a name) or args.instanceId (a list uuid, or a name), else the default list.
+// With the session the lists were found in, so the request goes on only with that sign-in.
 async function resolveList(args) {
+  var session = currentSession();
   var state = await freshState(false);
   var id = typeof args.instanceId === 'string' ? args.instanceId.trim() : '';
   var name = typeof args.list === 'string' ? args.list.trim() : '';
@@ -483,7 +489,7 @@ async function resolveList(args) {
   }
   uuid = uuid || defaultListUuid(state);
   if (!uuid) throw fail('PLUGIN_UNAVAILABLE', 'Your Bring! account has no lists.');
-  return { state: state, uuid: uuid, name: listName(state, uuid), locale: listLocale(state, uuid) };
+  return { state: state, uuid: uuid, name: listName(state, uuid), locale: listLocale(state, uuid), session: session };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -602,8 +608,9 @@ function parseItems(text) {
 // ---------------------------------------------------------------------------------------------
 // List contents
 
-async function loadItems(listUuid) {
-  var json = await api('GET', 'v2/bringlists/' + encodeURIComponent(listUuid), undefined, 'load the list');
+// session: the one the caller found the list in (see api).
+async function loadItems(listUuid, session) {
+  var json = await api('GET', 'v2/bringlists/' + encodeURIComponent(listUuid), undefined, 'load the list', session);
   var items = json.items;
   // Not an empty list: adding to it would make duplicates of what's there.
   if (!items || typeof items !== 'object') throw unreadableError('load the list');
@@ -619,12 +626,14 @@ async function openList(args) {
   var list = await resolveList(args);
   var current;
   try {
-    current = await loadItems(list.uuid);
+    current = await loadItems(list.uuid, list.session);
   } catch (e) {
     if (e.status !== 404) throw e;
+    var session = list.session;
     await freshState(true);
     list = await resolveList(args);
-    current = await loadItems(list.uuid);
+    list.session = session; // Still the sign-in this request began in.
+    current = await loadItems(list.uuid, session);
   }
   return { list: list, catalog: await loadCatalog(list.locale), current: current };
 }
@@ -669,9 +678,9 @@ function change(itemId, specification, uuid, operation) {
   };
 }
 
-async function putChanges(listUuid, changes, operation) {
+async function putChanges(listUuid, changes, operation, session) {
   await api('PUT', 'v2/bringlists/' + encodeURIComponent(listUuid) + '/items',
-    { changes: changes, sender: '' }, operation);
+    { changes: changes, sender: '' }, operation, session);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -753,7 +762,7 @@ async function addItems(args, items) {
     });
   });
 
-  if (changes.length) await putChanges(list.uuid, changes, 'add to the list');
+  if (changes.length) await putChanges(list.uuid, changes, 'add to the list', list.session);
 
   var text;
   if (added.length) {
@@ -788,7 +797,7 @@ async function completeItem(args) {
     })[0];
   }
   if (!item) throw fail('INVALID_ARGS', (name || 'That item') + ' isn\'t on ' + list.name + '.');
-  await putChanges(list.uuid, [change(item.itemId, item.specification || '', item.uuid || null, 'TO_RECENTLY')], 'update the list');
+  await putChanges(list.uuid, [change(item.itemId, item.specification || '', item.uuid || null, 'TO_RECENTLY')], 'update the list', list.session);
   return { text: 'Checked off ' + displayName(item.itemId, catalog) + ' on ' + list.name + '.', refreshed: CHANGED };
 }
 
@@ -851,25 +860,26 @@ function count(value, unit) {
 }
 
 async function listsData() {
+  var session = currentSession();
   var state = await freshState(false);
   var instances;
   try {
-    instances = await listInstances(state);
+    instances = await listInstances(state, session);
   } catch (e) {
     if (e.status !== 404) throw e;
     // A list was deleted or left since the last sync.
-    instances = await listInstances(await freshState(true));
+    instances = await listInstances(await freshState(true), session);
   }
   return { validUntilMs: Date.now() + SOURCE_TTL_MS, instances: instances };
 }
 
-async function listInstances(state) {
+async function listInstances(state, session) {
   var lists = orderedLists(state);
   var instances = [];
   for (var i = 0; i < lists.length; i++) {
     var locale = listLocale(state, lists[i].uuid);
     var catalog = await loadCatalog(locale);
-    var items = await loadItems(lists[i].uuid);
+    var items = await loadItems(lists[i].uuid, session);
     var names = items.purchase.map(function (item) {
       return describe(displayName(item.itemId, catalog), item.specification);
     });

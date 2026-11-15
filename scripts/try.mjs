@@ -92,11 +92,11 @@ switch (command) {
   case 'remove': {
     // Dev-only cleanup: deletes an item from the default list entirely (not just "recently used").
     const list = await context.resolveList({});
-    const items = await context.loadItems(list.uuid);
+    const items = await context.loadItems(list.uuid, list.session);
     const wanted = rest.join(' ').trim().toLowerCase();
     const found = [...items.purchase, ...items.recently].filter((i) => i.itemId.toLowerCase() === wanted);
     for (const item of found) {
-      await context.putChanges(list.uuid, [context.change(item.itemId, item.specification || '', item.uuid || null, 'REMOVE')], 'remove the item');
+      await context.putChanges(list.uuid, [context.change(item.itemId, item.specification || '', item.uuid || null, 'REMOVE')], 'remove the item', list.session);
     }
     print({ removed: found.map((i) => i.itemId), list: list.name });
     break;
