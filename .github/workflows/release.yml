@@ -9,7 +9,7 @@
 #
 # The store accepts this repo's GitHub OIDC token, so no store secret is stored here. Only the publish job can
 # request one, and all it runs is the pinned download-artifact action, curl and jq. git-cliff, npm, pebble-tool
-# and the SDK run in jobs with a read-only token and no id-token.
+# and the SDK run in the build job, with a read-only token and no id-token.
 name: Release
 
 on:
@@ -42,9 +42,9 @@ env:
   UV_EXCLUDE_NEWER: "2026-11-13T00:00:00Z"
 
 jobs:
-  # ---------------------------------------------------------------- Prepare
-  prepare:
-    name: Prepare release
+  # ---------------------------------------------------------------- Build
+  build:
+    name: Build
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -101,35 +101,12 @@ jobs:
           for f in notes/*; do echo "----- $f"; cat "$f"; done
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: notes
-          path: notes/
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------- Build
-  build:
-    name: Build
-    needs: prepare
-    runs-on: ubuntu-26.04
-    permissions:
-      contents: read
-    env:
-      TAG: ${{ needs.prepare.outputs.tag }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
       - run: npm test
 
       - name: Stamp the version
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
         run: npm pkg set version="${TAG#v}"
-
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: "0.13.8" # uv itself; setup-uv takes the latest without it
-          enable-cache: false
 
       - name: Install pebble-tool and the SDK
         run: |
@@ -141,6 +118,8 @@ jobs:
       - run: pebble build
 
       - name: Check the built version
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
         run: |
           mkdir dist
           pbw="dist/shopping-list-for-bring-$TAG.pbw"
@@ -153,6 +132,12 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          name: notes
+          path: notes/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
           name: pbw
           path: dist/*.pbw
           if-no-files-found: error
@@ -160,7 +145,7 @@ jobs:
   # ---------------------------------------------------------------- Store
   publish:
     name: Publish to the Pebble appstore
-    needs: [prepare, build]
+    needs: build
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-26.04
     permissions:
@@ -173,7 +158,7 @@ jobs:
 
       - name: Upload the release to the store
         env:
-          TAG: ${{ needs.prepare.outputs.tag }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://appstore-api.repebble.com" | jq -r .value)
@@ -196,7 +181,7 @@ jobs:
   # failure finds the release it made and stops.
   release:
     name: Tag and create the GitHub release
-    needs: [prepare, publish]
+    needs: [build, publish]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-26.04
     permissions:
@@ -209,7 +194,7 @@ jobs:
 
       - name: Create the release
         env:
-          TAG: ${{ needs.prepare.outputs.tag }}
+          TAG: ${{ needs.build.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
