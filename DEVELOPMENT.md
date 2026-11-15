@@ -23,6 +23,13 @@ Index turns each action's `description` into the tool description, and the plugi
 the agent searches its tools. Word both for the model. Every top-level parameter needs a `type`, or Index drops
 the tool.
 
+The Pebble app gives an action or a source request 20 s, then reports a bare "plugin did not respond". `fetch`
+has no timeout there and plugins get no timers, so the plugin keeps its own deadline (16 s). Re-syncing the
+account's lists and downloading catalogs are skipped when they would leave too little time for the rest, no
+request starts too late to finish, and on Android (whose WebView has `AbortSignal.timeout`) a hanging request is
+aborted. iOS's JavaScriptCore can't abort one, so there only the next request is kept from starting. Then the
+action fails with `TIMEOUT` and a message Index shows. A failed `add_items` names the items that weren't added.
+
 Names are matched with Bring!'s catalog in this order: the list's language (`listArticleLanguage`), the same
 language elsewhere (e.g. `de-DE` for a `de-CH` list), then the account's language. Unknown names are added as
 said, with the first letter capitalised.

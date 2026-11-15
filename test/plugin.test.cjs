@@ -98,7 +98,8 @@ function fakeBring(options = {}) {
   return server;
 }
 
-function load(server, stored = {}) {
+// globals: extra ones the engine has (e.g. AbortSignal, which Android's WebView has but iOS lacks).
+function load(server, stored = {}, globals = {}) {
   const secure = new Map(Object.entries(stored.secure || {}));
   const local = new Map(Object.entries(stored.local || {}));
   const handlers = {};
@@ -124,6 +125,7 @@ function load(server, stored = {}) {
       registerConfigHandler: (h) => (handlers.config = h),
       refreshSources: (s) => refreshed.push(s),
     },
+    ...globals,
   };
   vm.createContext(context);
   vm.runInContext(SOURCE, context);
@@ -149,8 +151,8 @@ function load(server, stored = {}) {
   return { context, handlers, secure, local, refreshed, config, action, source };
 }
 
-async function signedIn(server = fakeBring()) {
-  const plugin = load(server);
+async function signedIn(server = fakeBring(), globals) {
+  const plugin = load(server, {}, globals);
   const result = await plugin.config({ type: 'signIn', email: 'me@example.com', password: 'secret' });
   assert.strictEqual(result.signedIn, true, JSON.stringify(result));
   return { server, plugin };
@@ -399,7 +401,7 @@ test('a dead network is told apart from a missing permission', async () => {
   server.fetch = async () => { throw new TypeError('fetch failed'); };
   plugin.local.delete('bring.state.v1');
   let out = await plugin.action('add_items', { items: [{ name: 'Milk' }] });
-  assert.match(out.error.message, /Could not reach Bring!\. Check the phone's internet connection\./);
+  assert.match(out.error.message, /Bring! can't be reached\. Check the phone's internet connection\./);
   context.Pebble.permissions.query = async (p) => (p === 'Internet/web.getbring.com' ? 'prompt' : 'granted');
   out = await plugin.action('add_items', { items: [{ name: 'Milk' }] });
   assert.match(out.error.message, /isn't allowed to connect to web\.getbring\.com yet/);
@@ -853,4 +855,86 @@ test('catalogs that can\'t be had are asked for once, not for every item', async
   const catalogs = server.requests.filter((r) => r.url.startsWith('https://web.getbring.com/')).map((r) => r.url);
   assert.ok(catalogs.length > 1, JSON.stringify(catalogs));
   assert.deepStrictEqual(catalogs, [...new Set(catalogs)]);
+});
+
+// The plugin's clock, which only moves as each request takes delay(url, init) ms.
+function slowNetwork(plugin, server, delay) {
+  let now = Date.now();
+  vm.runInContext('Date', plugin.context).now = () => now;
+  const fetch = server.fetch;
+  server.fetch = async (url, init = {}) => {
+    now += delay(url, init);
+    return fetch(url, init);
+  };
+}
+
+const isSync = (url) => [`v2/bringusers/${USER}`, `bringusersettings/${USER}`, `bringusers/${USER}/lists`].some((r) => url === API + r);
+const isCatalog = (url) => url.startsWith('https://web.getbring.com/');
+const staleLists = (plugin) => plugin.local.set('bring.state.v1', JSON.stringify({ ...JSON.parse(plugin.local.get('bring.state.v1')), syncedAt: 1 }));
+
+test('on a slow connection the lists and catalogs are left for later, and the item still gets added', async () => {
+  const { server, plugin } = await signedIn();
+  staleLists(plugin);
+  slowNetwork(plugin, server, (url) => (isSync(url) || isCatalog(url) ? 9000 : 0));
+  server.requests = [];
+  const out = await plugin.action('add_items', { items: [{ name: 'milk' }] });
+  assert.strictEqual(out.ok && out.ok.text, 'Added Milk to Zuhause.', JSON.stringify(out));
+  assert.deepStrictEqual(server.requests.filter((r) => isSync(r.url) || isCatalog(r.url)).map((r) => r.url), [API + `v2/bringusers/${USER}`]);
+});
+
+test('a connection too slow to add anything says so in time, instead of not answering', async () => {
+  const { server, plugin } = await signedIn();
+  staleLists(plugin);
+  slowNetwork(plugin, server, () => 6000);
+  server.requests = [];
+  const out = await plugin.action('add_items', { items: [{ name: 'milk', specification: '2 l' }, { name: 'eggs' }] });
+  assert.strictEqual(out.error && out.error.code, 'TIMEOUT', JSON.stringify(out));
+  assert.strictEqual(out.error.message, 'Couldn\'t add milk (2 l) and eggs. Bring! didn\'t answer in time. The phone\'s internet connection may be slow.');
+  assert.ok(!server.requests.some((r) => r.method === 'PUT'));
+  // Sources answer in time too.
+  const source = await plugin.source('shopping', 'list');
+  assert.strictEqual(source.error && source.error.code, 'TIMEOUT', JSON.stringify(source));
+});
+
+test('where the engine can abort a request, one that hangs is given up on before the Pebble app gives up', async () => {
+  const signals = [];
+  const AbortSignal = {
+    timeout(ms) {
+      const listeners = [];
+      const signal = { aborted: false, addEventListener: (type, f) => type === 'abort' && listeners.push(f) };
+      signals.push({ ms, abort: () => { signal.aborted = true; listeners.forEach((f) => f()); } });
+      return signal;
+    },
+  };
+  const { server, plugin } = await signedIn(fakeBring(), { AbortSignal });
+  // The settings page has no deadline, so nothing there is cut short.
+  assert.strictEqual(signals.length, 0);
+  const fetch = server.fetch;
+  const putStarted = gate();
+  server.fetch = async (url, init = {}) => {
+    if (init.method !== 'PUT') return fetch(url, init);
+    putStarted.arrived();
+    return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new TypeError('fetch abort: ' + url))));
+  };
+  const answer = plugin.action('add_items', { items: [{ name: 'milk' }] });
+  await putStarted.started;
+  const put = signals[signals.length - 1];
+  assert.ok(put.ms > 0 && put.ms <= 16000, String(put.ms));
+  put.abort();
+  const out = await answer;
+  assert.strictEqual(out.error && out.error.code, 'TIMEOUT', JSON.stringify(out));
+  assert.strictEqual(out.error.message, 'Bring! didn\'t confirm adding milk: the phone\'s internet connection may be slow or down. ' +
+    'Check the list, or try again: nothing is added twice.');
+  // And it's true: had Bring! made the change, saying it again once the connection is back doesn't add it twice.
+  server.fetch = fetch;
+  server.lists[LIST].purchase.push({ uuid: 'u-1', itemId: 'Milch', specification: '', attributes: [] });
+  const again = await plugin.action('add_items', { items: [{ name: 'milk' }] });
+  assert.strictEqual(again.ok && again.ok.text, 'Milk is already on Zuhause.', JSON.stringify(again));
+});
+
+test('a dead network names the items that weren\'t added', async () => {
+  const { server, plugin } = await signedIn();
+  server.fetch = async () => { throw new TypeError('fetch failed'); };
+  const out = await plugin.action('add_items', { items: [{ name: 'milk' }] });
+  assert.strictEqual(out.error.message, 'Couldn\'t add milk. Bring! can\'t be reached. Check the phone\'s internet connection.');
 });

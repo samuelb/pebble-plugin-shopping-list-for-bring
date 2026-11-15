@@ -60,6 +60,64 @@ function signInError() {
   return fail('AUTH_REQUIRED', 'Sign in to Bring! on the plugin\'s settings page.');
 }
 
+function tooSlowError() {
+  return fail('TIMEOUT', 'Bring! didn\'t answer in time. The phone\'s internet connection may be slow.');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Time: the Pebble app waits 20 s for the answer to an action or a source request, then gives up
+// with a bare "plugin did not respond". fetch has no timeout of its own and plugins get no timers,
+// so on a slow connection each request here could take longer than that. Instead, a request gets
+// a deadline: work that can be done without (renewing the account's lists, downloading catalogs)
+// leaves time for the rest, no request starts too late to finish, and where the engine can abort
+// one (Android) it's aborted at the deadline. Then the plugin says what went wrong, in time.
+
+var ANSWER_WITHIN_MS = 16 * 1000;
+var KEEP_FOR_THE_REST_MS = 6 * 1000;
+var SHORTEST_REQUEST_MS = 2 * 1000;
+
+// Set by the action and source handlers. The settings page has minutes, and no deadline.
+var deadline = Infinity;
+
+// Runs optional work with the deadline brought forward, so what has to come after it still has
+// time. A session serves one request, step by step, so nothing else sees the earlier deadline.
+async function leavingTime(work) {
+  var own = deadline;
+  deadline = own - KEEP_FOR_THE_REST_MS;
+  try {
+    return await work();
+  } finally {
+    deadline = own;
+  }
+}
+
+// A signal that aborts after ms, where the engine has AbortSignal.timeout (Android's WebView).
+// JavaScriptCore on iOS has none: there a request can't be cut short, only kept from starting.
+function timeoutSignal(ms) {
+  try {
+    return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(Math.max(1, Math.floor(ms))) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// fetch, if it can still finish by the deadline. Throws tooSlowError() when it can't.
+async function timedFetch(url, init) {
+  var left = deadline - Date.now();
+  if (left < SHORTEST_REQUEST_MS) throw tooSlowError();
+  var signal = isFinite(left) ? timeoutSignal(left) : null;
+  if (signal) init = Object.assign({}, init, { signal: signal });
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    if (!signal || !signal.aborted) throw e;
+    var late = tooSlowError();
+    late.sent = true;
+    throw late;
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Storage
 
@@ -172,7 +230,7 @@ async function networkError(error) {
   var missing = error && error.name === 'NotAllowedError' ? ['api.getbring.com'] : await domainsNotAllowed();
   return fail('PLUGIN_UNAVAILABLE', missing.length
     ? permissionMessage(missing)
-    : 'Could not reach Bring!. Check the phone\'s internet connection.');
+    : 'Bring! can\'t be reached. Check the phone\'s internet connection.');
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -213,10 +271,14 @@ async function send(method, path, body, auth) {
   }
   var response;
   try {
-    response = await fetch(API_ROOT + path, { method: method, headers: headers, body: payload });
+    response = await timedFetch(API_ROOT + path, { method: method, headers: headers, body: payload });
   } catch (e) {
     console.log('Bring: ' + method + ' ' + path + ' failed: ' + e);
-    throw await networkError(e);
+    if (e.code === 'TIMEOUT' && !e.sent) throw e;
+    var error = e.code === 'TIMEOUT' ? e : await networkError(e);
+    // Sent, maybe, but never answered: Bring! may or may not have made the change. Says how.
+    if (e.name !== 'NotAllowedError') error.unanswered = method;
+    throw error;
   }
   var text = '';
   try {
@@ -377,7 +439,8 @@ async function freshState(force) {
   var state = loadState();
   if (force || !state.syncedAt || Date.now() - state.syncedAt > STATE_TTL_MS || !state.lists.length) {
     try {
-      state = await syncAccount();
+      // With lists to fall back on, renewing them mustn't take the time the request needs.
+      state = force || !state.lists.length ? await syncAccount() : await leavingTime(syncAccount);
     } catch (e) {
       // A stale list of lists is better than failing, as long as there is one.
       if (e.code === 'AUTH_REQUIRED' || !state.lists.length) throw e;
@@ -509,7 +572,10 @@ async function readCatalog(locale) {
   var cached = readLocal(CATALOG_KEY + locale, null);
   if (cached && cached.map && Date.now() - cached.at < CATALOG_TTL_MS) return cached.map;
   try {
-    var response = await fetch(CATALOG_ROOT + locale + '.json', { headers: { 'Accept': 'application/json' } });
+    // Items can be added without it, so it mustn't take the time the request needs.
+    var response = await leavingTime(function () {
+      return timedFetch(CATALOG_ROOT + locale + '.json', { headers: { 'Accept': 'application/json' } });
+    });
     if (response.status === 200) {
       var map = JSON.parse(await response.text());
       if (map && typeof map === 'object') {
@@ -705,6 +771,24 @@ function normalizeItems(args) {
 async function addItems(args, items) {
   if (!items.length) throw fail('INVALID_ARGS', 'Say what to add, e.g. "milk and 6 eggs".');
   if (items.length > MAX_ITEMS_PER_ACTION) throw fail('INVALID_ARGS', 'That\'s more than ' + MAX_ITEMS_PER_ACTION + ' items at once.');
+  try {
+    return await addToList(args, items);
+  } catch (e) {
+    throw notAdded(e, items);
+  }
+}
+
+// What a failed add says: which items didn't make it, so the user knows what to add again.
+function notAdded(error, items) {
+  var names = joinNames(items.map(function (item) { return describe(item.name, item.specification); }));
+  error.message = error.unanswered === 'PUT'
+    ? 'Bring! didn\'t confirm adding ' + names + ': the phone\'s internet connection may be slow or down. ' +
+      'Check the list, or try again: nothing is added twice.'
+    : 'Couldn\'t add ' + names + '. ' + error.message;
+  return error;
+}
+
+async function addToList(args, items) {
   var opened = await openList(args);
   var list = opened.list;
   var catalog = opened.catalog;
@@ -817,6 +901,7 @@ async function readList(args) {
 }
 
 Pebble.registerActionHandler(async function (request, respond) {
+  deadline = Date.now() + ANSWER_WITHIN_MS;
   var args = (request && request.args) || {};
   try {
     var result;
@@ -913,6 +998,7 @@ async function itemsData() {
 }
 
 Pebble.registerSourceHandler(async function (request, respond) {
+  deadline = Date.now() + ANSWER_WITHIN_MS;
   var key = request && request.category + '/' + request.item;
   try {
     if (key === 'shopping/list') respond.data(await listsData());
