@@ -480,7 +480,15 @@ async function resolveList(args) {
 // them translated, so "Milk" on an English list has to be saved as "Milch" to get its icon and
 // section. Items not in the catalog are saved as typed.
 
-async function loadCatalog(locale) {
+// Each locale's catalog is read (or downloaded) once per run: one that can't be had isn't asked
+// for again for every item.
+var catalogs = Object.create(null);
+
+function loadCatalog(locale) {
+  return catalogs[locale] || (catalogs[locale] = readCatalog(locale));
+}
+
+async function readCatalog(locale) {
   var cached = readLocal(CATALOG_KEY + locale, null);
   if (cached && cached.map && Date.now() - cached.at < CATALOG_TTL_MS) return cached.map;
   try {

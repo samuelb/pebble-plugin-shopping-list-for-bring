@@ -820,3 +820,13 @@ test('a sign-in whose lists fail to load still signs in, and says what went wron
   failing = false;
   assert.deepStrictEqual((await plugin.config({ type: 'refresh' })).lists.map((l) => l.name), ['Zuhause', 'Party']);
 });
+
+test('catalogs that can\'t be had are asked for once, not for every item', async () => {
+  const server = fakeBring();
+  const { plugin } = await signedIn(server);
+  const out = await plugin.action('add_items', { items: [{ name: 'Tofu' }, { name: 'Rice' }, { name: 'Beans' }] });
+  assert.strictEqual(out.ok.text, 'Added Tofu, Rice and Beans to Zuhause.');
+  const catalogs = server.requests.filter((r) => r.url.startsWith('https://web.getbring.com/')).map((r) => r.url);
+  assert.ok(catalogs.length > 1, JSON.stringify(catalogs));
+  assert.deepStrictEqual(catalogs, [...new Set(catalogs)]);
+});
