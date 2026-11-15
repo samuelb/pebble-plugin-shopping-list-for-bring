@@ -406,22 +406,62 @@ test('a dead network is told apart from a missing permission', async () => {
   assert.deepStrictEqual(await plugin.config({ type: 'permissions' }), { missing: ['web.getbring.com'] });
 });
 
+// started resolves once arrived() is called; held, once release() is.
+function gate() {
+  const g = {};
+  g.started = new Promise((resolve) => (g.arrived = resolve));
+  g.held = new Promise((resolve) => (g.release = resolve));
+  return g;
+}
+
 // Holds the first request whose URL passes `match` until release() is called.
 function hold(server, match) {
   const fetch = server.fetch;
-  const gate = {};
-  gate.started = new Promise((resolve) => (gate.arrived = resolve));
-  const held = new Promise((resolve) => (gate.release = resolve));
+  const g = gate();
   let first = true;
   server.fetch = async (url, init) => {
     if (first && match(url)) {
       first = false;
-      gate.arrived();
-      await held;
+      g.arrived();
+      await g.held;
     }
     return fetch(url, init);
   };
-  return gate;
+  return g;
+}
+
+// Holds the first secureStorage[op] call made once ready() is true until release() is called: a
+// read with what it read before, a write or removal before it happens.
+function holdStorage(plugin, op, ready = () => true) {
+  const storage = plugin.context.Pebble.secureStorage;
+  const original = storage[op];
+  const g = gate();
+  let holding = false;
+  storage[op] = async (...args) => {
+    if (holding || !ready()) return original(...args);
+    holding = true;
+    g.arrived();
+    if (op === 'getItem') {
+      const value = await original(...args);
+      await g.held;
+      return value;
+    }
+    await g.held;
+    return original(...args);
+  };
+  return g;
+}
+
+// Says whether Bring! has answered a token renewal yet.
+function markRenewal(server) {
+  const fetch = server.fetch;
+  let renewed = false;
+  server.fetch = async (url, init) => {
+    const reply = await fetch(url, init);
+    if (url === API + 'v2/bringauth/token') renewed = true;
+    return reply;
+  };
+  return () => renewed;
 }
 
 test('signing out while a token renewal is under way stays signed out', async () => {
@@ -459,31 +499,7 @@ test('a sign-out that comes between renewing the token and saving it wins', asyn
   for (const op of ['getItem', 'setItem']) {
     const { server, plugin } = await signedIn();
     expireToken(plugin);
-    let renewed = false;
-    const fetch = server.fetch;
-    server.fetch = async (url, init) => {
-      const reply = await fetch(url, init);
-      if (url === API + 'v2/bringauth/token') renewed = true;
-      return reply;
-    };
-    const storage = plugin.context.Pebble.secureStorage;
-    const original = storage[op];
-    const gate = {};
-    gate.started = new Promise((resolve) => (gate.arrived = resolve));
-    const held = new Promise((resolve) => (gate.release = resolve));
-    let holding = false;
-    storage[op] = async (...args) => {
-      if (!renewed || holding) return original(...args);
-      holding = true;
-      gate.arrived();
-      if (op === 'getItem') {
-        const value = await original(...args);
-        await held;
-        return value;
-      }
-      await held;
-      return original(...args);
-    };
+    const gate = holdStorage(plugin, op, markRenewal(server));
     const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
     await gate.started;
     assert.strictEqual((await plugin.config({ type: 'signOut' })).signedIn, false);
@@ -513,28 +529,8 @@ test('a sign-out during a sync leaves no account data behind', async () => {
 test('a renewal saved late can\'t undo a sign-in made after a sign-out', async () => {
   const { server, plugin } = await signedIn();
   expireToken(plugin);
-  let renewed = false;
-  const fetch = server.fetch;
-  server.fetch = async (url, init) => {
-    const reply = await fetch(url, init);
-    if (url === API + 'v2/bringauth/token') renewed = true;
-    return reply;
-  };
   // Hold the renewal's save until the user has signed out and in again.
-  const storage = plugin.context.Pebble.secureStorage;
-  const setItem = storage.setItem;
-  const gate = {};
-  gate.started = new Promise((resolve) => (gate.arrived = resolve));
-  const held = new Promise((resolve) => (gate.release = resolve));
-  let holding = false;
-  storage.setItem = async (...args) => {
-    if (renewed && !holding) {
-      holding = true;
-      gate.arrived();
-      await held;
-    }
-    return setItem(...args);
-  };
+  const gate = holdStorage(plugin, 'setItem', markRenewal(server));
   const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
   await gate.started;
   await plugin.config({ type: 'signOut' });
@@ -565,20 +561,7 @@ test('a sign-out Bring! forced late can\'t undo the default list of a newer sign
   expireToken(plugin);
   server.refreshStatus = 401;
   // Hold the forced sign-out's token removal until the user has signed in again and picked a list.
-  const storage = plugin.context.Pebble.secureStorage;
-  const removeItem = storage.removeItem;
-  const gate = {};
-  gate.started = new Promise((resolve) => (gate.arrived = resolve));
-  const held = new Promise((resolve) => (gate.release = resolve));
-  let holding = false;
-  storage.removeItem = async (...args) => {
-    if (!holding) {
-      holding = true;
-      gate.arrived();
-      await held;
-    }
-    return removeItem(...args);
-  };
+  const gate = holdStorage(plugin, 'removeItem');
   const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
   await gate.started;
   server.refreshStatus = 200;
@@ -596,21 +579,7 @@ test('a token read that a new sign-in overtook is not used to sign that one out'
   // Expired tokens without a refresh token: renewing them would sign out.
   plugin.secure.set(authKeyOf(plugin), JSON.stringify({ ...storedAuth(plugin), refreshToken: undefined, expiresAt: 1 }));
   // Hold the reply of the action's first token read until the user has signed out and in again.
-  const storage = plugin.context.Pebble.secureStorage;
-  const getItem = storage.getItem;
-  const gate = {};
-  gate.started = new Promise((resolve) => (gate.arrived = resolve));
-  const held = new Promise((resolve) => (gate.release = resolve));
-  let holding = false;
-  storage.getItem = async (...args) => {
-    const value = await getItem(...args);
-    if (!holding) {
-      holding = true;
-      gate.arrived();
-      await held;
-    }
-    return value;
-  };
+  const gate = holdStorage(plugin, 'getItem');
   const pending = plugin.action('add_items', { items: [{ name: 'Milk' }] });
   await gate.started;
   await plugin.config({ type: 'signOut' });
