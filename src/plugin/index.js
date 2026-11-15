@@ -900,19 +900,19 @@ async function status() {
   var auth = await loadAuth();
   if (!auth) return { signedIn: false };
   var state = loadState();
+  var error;
   try {
     state = await freshState(false);
   } catch (e) {
     if (e.code === 'AUTH_REQUIRED') return { signedIn: false, error: e.message };
-    return {
-      signedIn: true, email: auth.email, name: auth.name, lists: state.lists,
-      defaultList: defaultListUuid(state), error: e.message,
-    };
+    error = e.message;
   }
-  return {
+  var reply = {
     signedIn: true, email: auth.email, name: auth.name, lists: orderedLists(state),
     defaultList: defaultListUuid(state),
   };
+  if (error) reply.error = error;
+  return reply;
 }
 
 async function signIn(email, password) {
